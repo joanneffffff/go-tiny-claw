@@ -16,8 +16,9 @@ type MockProvider struct{}
 
 func (p *MockProvider) Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*schema.Message, error) {
 	return &schema.Message{
-		Role:    schema.RoleAssistant,
-		Content: "This is a mock response from MockProvider",
+		Role:       schema.RoleAssistant,
+		Content:    "This is a mock response from MockProvider",
+		ToolCalls:  []schema.ToolCall{}, // No tool calls in mock
 	}, nil
 }
 
@@ -31,14 +32,13 @@ func main() {
 	registry := tools.NewRegistry()
 	// registry.Register(tools.NewBashTool())
 
-	// 3. 初始化上下文管理器 (内存管理器) - 暂用空实现
-	// ctxManager := context.NewManager(...)
-
-	// 4. 组装并启动核心 Engine (操作系统心脏)
-	agentEngine := engine.NewAgentEngine(llmProvider, registry)
+	// 3. 组装并启动核心 Engine (操作系统心脏)
+	// 设置工作目录
+	workDir := "/app"
+	agentEngine := engine.NewAgentEngine(llmProvider, registry, workDir)
 
 	fmt.Println("开始执行任务...")
-	err := agentEngine.Run("帮我检查一下当前目录下的文件并输出一个 README.md 大纲")
+	err := agentEngine.Run(context.Background(), "帮我检查一下当前目录下的文件并输出一个 README.md 大纲")
 	if err != nil {
 		log.Fatalf("引擎运行崩溃: %v", err)
 	}
