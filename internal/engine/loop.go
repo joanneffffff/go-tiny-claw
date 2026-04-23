@@ -22,11 +22,12 @@ type AgentEngine struct {
 	EnableThinking bool
 }
 
-func NewAgentEngine(p provider.LLMProvider, r tools.Registry, workDir string) *AgentEngine {
+func NewAgentEngine(p provider.LLMProvider, r tools.Registry, workDir string, enableThinking bool) *AgentEngine {
 	return &AgentEngine{
-		provider: p,
-		registry: r,
-		WorkDir:  workDir,
+		provider:       p,
+		registry:       r,
+		WorkDir:        workDir,
+		EnableThinking: enableThinking,
 	}
 }
 

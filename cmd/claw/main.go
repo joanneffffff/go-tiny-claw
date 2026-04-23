@@ -67,10 +67,7 @@ func main() {
 
 	// 3. 组装并启动核心 Engine (操作系统心脏)
 	workDir := "/app"
-	agentEngine := engine.NewAgentEngine(llmProvider, registry, workDir)
-
-	// 开启两阶段 ReAct 循环
-	agentEngine.EnableThinking = true
+	agentEngine := engine.NewAgentEngine(llmProvider, registry, workDir, true) // 开启两阶段 ReAct 循环
 
 	fmt.Println("开始执行任务...")
 	err := agentEngine.Run(context.Background(), "帮我检查一下当前目录下的文件并输出一个 README.md 大纲")
