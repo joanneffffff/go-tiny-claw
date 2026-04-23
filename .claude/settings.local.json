@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go mod *)",
+      "Bash(docker *)",
+      "Bash(net stop *)",
+      "Bash(net start *)",
+      "Bash(MSYS_NO_PATHCONV=1 docker run *)",
+      "Bash(git init *)",
+      "Bash(git add *)"
+    ]
+  }
+}
