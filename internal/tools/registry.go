@@ -1,50 +1,50 @@
 package tools
 
-import "github.com/joanneffffff/go-tiny-claw/internal/schema"
+import (
+	"context"
+	"encoding/json"
+	"fmt"
 
-// Tool defines the interface for executable tools
+	"github.com/joanneffffff/go-tiny-claw/internal/schema"
+)
+
+// Tool 定义了可执行工具的接口
 type Tool interface {
-	// Name returns the tool name
-	Name() string
-
 	// Execute runs the tool with given arguments
-	Execute(args map[string]string) (*schema.ToolResult, error)
-
-	// Description returns the tool description
-	Description() string
+	Execute(ctx context.Context, args map[string]string) (*schema.ToolResult, error)
 
 	// Definition returns the tool definition for LLM
 	Definition() schema.ToolDefinition
 }
 
-// Registry manages tool registration and execution
-type Registry struct {
+// Registry 定义了工具的注册与分发执行接口
+type Registry interface {
+	// GetAvailableTools 返回当前系统挂载的所有可用工具的 Schema
+	GetAvailableTools() []schema.ToolDefinition
+
+	// Execute 实际执行模型请求的工具，并返回结果
+	Execute(ctx context.Context, call schema.ToolCall) schema.ToolResult
+}
+
+// registry 是工具注册表的默认实现
+type registry struct {
 	tools map[string]Tool
 }
 
 // NewRegistry creates a new tool registry
-func NewRegistry() *Registry {
-	return &Registry{
+func NewRegistry() Registry {
+	return &registry{
 		tools: make(map[string]Tool),
 	}
 }
 
 // Register adds a tool to the registry
-func (r *Registry) Register(tool Tool) {
-	r.tools[tool.Name()] = tool
+func (r *registry) Register(tool Tool) {
+	r.tools[tool.Definition().Name] = tool
 }
 
-// Execute finds and runs a tool by name
-func (r *Registry) Execute(name string, args map[string]string) (*schema.ToolResult, error) {
-	tool, ok := r.tools[name]
-	if !ok {
-		return nil, &ToolNotFoundError{Name: name}
-	}
-	return tool.Execute(args)
-}
-
-// ListTools returns all registered tools as ToolDefinitions
-func (r *Registry) ListTools() []schema.ToolDefinition {
+// GetAvailableTools returns all registered tools as ToolDefinitions
+func (r *registry) GetAvailableTools() []schema.ToolDefinition {
 	defs := make([]schema.ToolDefinition, 0, len(r.tools))
 	for _, tool := range r.tools {
 		defs = append(defs, tool.Definition())
@@ -52,11 +52,41 @@ func (r *Registry) ListTools() []schema.ToolDefinition {
 	return defs
 }
 
-// ToolNotFoundError is returned when a tool is not found
-type ToolNotFoundError struct {
-	Name string
-}
+// Execute finds and runs a tool by name
+func (r *registry) Execute(ctx context.Context, call schema.ToolCall) schema.ToolResult {
+	tool, ok := r.tools[call.Name]
+	if !ok {
+		return schema.ToolResult{
+			ToolCallID: call.ID,
+			Output:     fmt.Sprintf("tool not found: %s", call.Name),
+			IsError:    true,
+		}
+	}
 
-func (e *ToolNotFoundError) Error() string {
-	return "tool not found: " + e.Name
+	// Parse arguments from JSON
+	var args map[string]string
+	if call.Arguments != nil {
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return schema.ToolResult{
+				ToolCallID: call.ID,
+				Output:     fmt.Sprintf("failed to parse arguments: %v", err),
+				IsError:    true,
+			}
+		}
+	}
+
+	result, err := tool.Execute(ctx, args)
+	if err != nil {
+		return schema.ToolResult{
+			ToolCallID: call.ID,
+			Output:     err.Error(),
+			IsError:    true,
+		}
+	}
+
+	return schema.ToolResult{
+		ToolCallID: call.ID,
+		Output:     result.Output,
+		IsError:    result.IsError,
+	}
 }

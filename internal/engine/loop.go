@@ -13,12 +13,12 @@ import (
 // AgentEngine is the core engine that orchestrates the agent loop
 type AgentEngine struct {
 	provider  provider.LLMProvider
-	registry *tools.Registry
+	registry tools.Registry
 	messages []schema.Message
 }
 
 // NewAgentEngine creates a new agent engine
-func NewAgentEngine(p provider.LLMProvider, r *tools.Registry) *AgentEngine {
+func NewAgentEngine(p provider.LLMProvider, r tools.Registry) *AgentEngine {
 	return &AgentEngine{
 		provider:  p,
 		registry: r,
@@ -37,7 +37,7 @@ func (e *AgentEngine) Run(userInput string) error {
 	log.Printf("📝 User input: %s", userInput)
 
 	// Get available tools
-	availableTools := e.registry.ListTools()
+	availableTools := e.registry.GetAvailableTools()
 
 	// Send to LLM
 	response, err := e.provider.Generate(context.Background(), e.messages, availableTools)
