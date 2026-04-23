@@ -54,7 +54,7 @@ func main() {
 
 	// 2. 初始化 Tool Registry (手脚)
 	registry := tools.NewRegistry()
-	// registry.Register(tools.NewBashTool())
+	registry.Register(&tools.BashTool{})
 
 	// 3. 组装并启动核心 Engine (操作系统心脏)
 	workDir := "/app"

@@ -24,6 +24,9 @@ type Registry interface {
 
 	// Execute 实际执行模型请求的工具，并返回结果
 	Execute(ctx context.Context, call schema.ToolCall) schema.ToolResult
+
+	// Register 注册一个工具到注册表
+	Register(tool Tool)
 }
 
 // registry 是工具注册表的默认实现
