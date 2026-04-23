@@ -13,7 +13,7 @@ import (
 	"github.com/joanneffffff/go-tiny-claw/internal/tools"
 )
 
-// MockProvider simulates an LLM that calls tools
+// MockProvider simulates an LLM that supports two-stage ReAct
 type MockProvider struct {
 	callCount int
 }
@@ -21,14 +21,23 @@ type MockProvider struct {
 func (p *MockProvider) Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*schema.Message, error) {
 	p.callCount++
 
-	log.Printf("[MockProvider] Turn %d: generating response...", p.callCount)
+	log.Printf("[MockProvider] Turn %d: generating response (tools=%v)...", p.callCount, availableTools != nil)
 
+	// If no tools provided, this is a thinking phase
+	if availableTools == nil {
+		return &schema.Message{
+			Role:     schema.RoleAssistant,
+			Reasoning: "我需要先检查当前目录的文件结构，了解项目布局。",
+		}, nil
+	}
+
+	// With tools provided, this is an action phase
 	// First call: return a tool call to bash
-	if p.callCount == 1 {
+	if p.callCount == 2 {
 		args, _ := json.Marshal(map[string]string{"command": "ls -la"})
 		return &schema.Message{
 			Role:    schema.RoleAssistant,
-			Content: "我需要先检查当前目录的文件结构。",
+			Content: "我将执行 ls -la 来查看目录结构。",
 			ToolCalls: []schema.ToolCall{
 				{ID: "call_1", Name: "bash", Arguments: args},
 			},
@@ -59,6 +68,9 @@ func main() {
 	// 3. 组装并启动核心 Engine (操作系统心脏)
 	workDir := "/app"
 	agentEngine := engine.NewAgentEngine(llmProvider, registry, workDir)
+
+	// 开启两阶段 ReAct 循环
+	agentEngine.EnableThinking = true
 
 	fmt.Println("开始执行任务...")
 	err := agentEngine.Run(context.Background(), "帮我检查一下当前目录下的文件并输出一个 README.md 大纲")

@@ -16,6 +16,9 @@ type Message struct {
 	Role    Role   `json:"role"`
 	Content string `json:"content"` // 存放纯文本内容
 
+	// Reasoning 存放模型的思维链输出（用于两阶段 ReAct）
+	Reasoning string `json:"reasoning,omitempty"`
+
 	// 如果模型决定调用工具，此字段将被填充 (支持并行调用多个工具)
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 
