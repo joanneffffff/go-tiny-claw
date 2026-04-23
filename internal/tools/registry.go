@@ -12,6 +12,9 @@ type Tool interface {
 
 	// Description returns the tool description
 	Description() string
+
+	// Definition returns the tool definition for LLM
+	Definition() schema.ToolDefinition
 }
 
 // Registry manages tool registration and execution
@@ -38,6 +41,15 @@ func (r *Registry) Execute(name string, args map[string]string) (*schema.ToolRes
 		return nil, &ToolNotFoundError{Name: name}
 	}
 	return tool.Execute(args)
+}
+
+// ListTools returns all registered tools as ToolDefinitions
+func (r *Registry) ListTools() []schema.ToolDefinition {
+	defs := make([]schema.ToolDefinition, 0, len(r.tools))
+	for _, tool := range r.tools {
+		defs = append(defs, tool.Definition())
+	}
+	return defs
 }
 
 // ToolNotFoundError is returned when a tool is not found

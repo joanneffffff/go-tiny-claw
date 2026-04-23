@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 
@@ -13,15 +14,11 @@ import (
 // MockProvider is a mock LLM provider for testing
 type MockProvider struct{}
 
-func (p *MockProvider) SendMessage(messages []schema.Message) (*schema.Message, error) {
+func (p *MockProvider) Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*schema.Message, error) {
 	return &schema.Message{
-		Role:    "assistant",
+		Role:    schema.RoleAssistant,
 		Content: "This is a mock response from MockProvider",
 	}, nil
-}
-
-func (p *MockProvider) GetName() string {
-	return "mock"
 }
 
 func main() {
@@ -38,7 +35,7 @@ func main() {
 	// ctxManager := context.NewManager(...)
 
 	// 4. 组装并启动核心 Engine (操作系统心脏)
-	agentEngine := engine.NewAgentEngine(&llmProvider, registry)
+	agentEngine := engine.NewAgentEngine(llmProvider, registry)
 
 	fmt.Println("开始执行任务...")
 	err := agentEngine.Run("帮我检查一下当前目录下的文件并输出一个 README.md 大纲")

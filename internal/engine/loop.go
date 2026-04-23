@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"fmt"
 	"log"
 
@@ -11,15 +12,15 @@ import (
 
 // AgentEngine is the core engine that orchestrates the agent loop
 type AgentEngine struct {
-	provider *provider.LLMProvider
+	provider  provider.LLMProvider
 	registry *tools.Registry
 	messages []schema.Message
 }
 
 // NewAgentEngine creates a new agent engine
-func NewAgentEngine(p *provider.LLMProvider, r *tools.Registry) *AgentEngine {
+func NewAgentEngine(p provider.LLMProvider, r *tools.Registry) *AgentEngine {
 	return &AgentEngine{
-		provider: p,
+		provider:  p,
 		registry: r,
 		messages: []schema.Message{},
 	}
@@ -29,14 +30,17 @@ func NewAgentEngine(p *provider.LLMProvider, r *tools.Registry) *AgentEngine {
 func (e *AgentEngine) Run(userInput string) error {
 	// Add user message
 	e.messages = append(e.messages, schema.Message{
-		Role:    "user",
+		Role:    schema.RoleUser,
 		Content: userInput,
 	})
 
 	log.Printf("📝 User input: %s", userInput)
 
+	// Get available tools
+	availableTools := e.registry.ListTools()
+
 	// Send to LLM
-	response, err := (*e.provider).SendMessage(e.messages)
+	response, err := e.provider.Generate(context.Background(), e.messages, availableTools)
 	if err != nil {
 		return fmt.Errorf("LLM request failed: %w", err)
 	}
