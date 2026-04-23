@@ -34,8 +34,8 @@ func NewAgentEngine(p provider.LLMProvider, r tools.Registry, workDir string, en
 // Run 启动 Agent 的生命周期
 func (e *AgentEngine) Run(ctx context.Context, userPrompt string) error {
 	log.Printf("[Engine] 引擎启动，锁定工作区: %s\n", e.WorkDir)
+	log.Printf("[Engine] 慢思考模式 (Thinking Phase): %v\n", e.EnableThinking)
 
-	// 1. 初始化会话的 Context (上下文内存)
 	contextHistory := []schema.Message{
 		{
 			Role:    schema.RoleSystem,
@@ -49,97 +49,81 @@ func (e *AgentEngine) Run(ctx context.Context, userPrompt string) error {
 
 	turnCount := 0
 
-	// 2. The Main Loop
 	for {
 		turnCount++
-		log.Printf("========== [Turn %d] 开始 ==========\n", turnCount)
+		log.Printf("\n========== [Turn %d] 开始 ==========\n", turnCount)
 
+		// 获取当前挂载的所有工具定义
 		availableTools := e.registry.GetAvailableTools()
 
-		// ===== 两阶段 ReAct 循环 =====
+		// ====================================================================
+		// Phase 1: 慢思考阶段 (Thinking) - 剥夺工具，强制规划
+		// ====================================================================
 		if e.EnableThinking {
-			// 阶段 1: 思考 (Thinking) - 不带工具，让模型输出推理过程
-			log.Println("[Engine] 阶段一：正在思考 (Thinking)...")
-			thinkingMsg, err := e.provider.Generate(ctx, contextHistory, nil)
+			log.Println("[Engine][Phase 1] 剥夺工具访问权，强制进入慢思考与规划阶段...")
+
+			// 核心机制：传入的 availableTools 为 nil！
+			// 大模型看不到任何 JSON Schema，被迫只能输出纯文本的思考过程。
+			thinkResp, err := e.provider.Generate(ctx, contextHistory, nil)
 			if err != nil {
-				return fmt.Errorf("模型思考失败: %w", err)
+				return fmt.Errorf("Thinking 阶段生成失败: %w", err)
 			}
 
-			// 将思考过程追加到上下文
-			contextHistory = append(contextHistory, *thinkingMsg)
+			// 如果模型输出了思考过程，我们将其作为 Assistant 消息追加到上下文中
+			if thinkResp.Content != "" {
+				fmt.Printf("🧠 [内部思考 Trace]: %s\n", thinkResp.Content)
+				contextHistory = append(contextHistory, *thinkResp)
+			}
+		}
 
-			if thinkingMsg.Reasoning != "" {
-				fmt.Printf("💭 模型思考: %s\n", thinkingMsg.Reasoning)
+		// ====================================================================
+		// Phase 2: 行动阶段 (Action) - 恢复工具，顺着规划执行
+		// ====================================================================
+		log.Println("[Engine][Phase 2] 恢复工具挂载，等待模型采取行动...")
+
+		// 此时的 contextHistory 中已经包含了上一阶段模型自己的 Thinking Trace。
+		// 模型会顺着自己的逻辑，结合恢复的 availableTools 发起精准的工具调用。
+		actionResp, err := e.provider.Generate(ctx, contextHistory, availableTools)
+		if err != nil {
+			return fmt.Errorf("Action 阶段生成失败: %w", err)
+		}
+
+		contextHistory = append(contextHistory, *actionResp)
+
+		if actionResp.Content != "" {
+			fmt.Printf("🤖 [对外回复]: %s\n", actionResp.Content)
+		}
+
+		// ====================================================================
+		// 退出与执行逻辑 (与上一讲保持一致)
+		// ====================================================================
+		if len(actionResp.ToolCalls) == 0 {
+			log.Println("[Engine] 模型未请求调用工具，任务宣告完成。")
+			break
+		}
+
+		log.Printf("[Engine] 模型请求调用 %d 个工具...\n", len(actionResp.ToolCalls))
+
+		for _, toolCall := range actionResp.ToolCalls {
+			log.Printf("  -> 🛠️ 执行工具: %s, 参数: %s\n", toolCall.Name, string(toolCall.Arguments))
+
+			result := e.registry.Execute(ctx, toolCall)
+
+			if result.IsError {
+				log.Printf("  -> ❌ 工具执行报错: %s\n", result.Output)
+			} else {
+				log.Printf("  -> ✅ 工具执行成功 (返回 %d 字节)\n", len(result.Output))
 			}
 
-			// 阶段 2: 行动 (Action) - 携带工具定义，让模型决定是否调用工具
-			log.Println("[Engine] 阶段二：请求行动 (Action)...")
-			actionMsg, err := e.provider.Generate(ctx, contextHistory, availableTools)
-			if err != nil {
-				return fmt.Errorf("模型行动请求失败: %w", err)
+			// 将工具执行的观察结果追加到 Context，准备进入下一轮
+			observationMsg := schema.Message{
+				Role:       schema.RoleUser,
+				Content:    result.Output,
+				ToolCallID: toolCall.ID,
 			}
-
-			contextHistory = append(contextHistory, *actionMsg)
-
-			if actionMsg.Content != "" {
-				fmt.Printf("🤖 模型: %s\n", actionMsg.Content)
-			}
-
-			// 如果没有工具调用，任务完成
-			if len(actionMsg.ToolCalls) == 0 {
-				log.Println("[Engine] 任务完成，退出循环。")
-				break
-			}
-
-			// 执行工具
-			e.executeToolCalls(ctx, actionMsg.ToolCalls, &contextHistory)
-
-		} else {
-			// ===== 标准 ReAct 循环 (单阶段) =====
-			log.Println("[Engine] 正在思考 (Reasoning)...")
-			responseMsg, err := e.provider.Generate(ctx, contextHistory, availableTools)
-			if err != nil {
-				return fmt.Errorf("模型生成失败: %w", err)
-			}
-
-			contextHistory = append(contextHistory, *responseMsg)
-
-			if responseMsg.Content != "" {
-				fmt.Printf("🤖 模型: %s\n", responseMsg.Content)
-			}
-
-			if len(responseMsg.ToolCalls) == 0 {
-				log.Println("[Engine] 任务完成，退出循环。")
-				break
-			}
-
-			e.executeToolCalls(ctx, responseMsg.ToolCalls, &contextHistory)
+			contextHistory = append(contextHistory, observationMsg)
 		}
 	}
 
 	return nil
-}
-
-// executeToolCalls 执行工具调用并将结果追加到上下文
-func (e *AgentEngine) executeToolCalls(ctx context.Context, toolCalls []schema.ToolCall, contextHistory *[]schema.Message) {
-	log.Printf("[Engine] 模型请求调用 %d 个工具...\n", len(toolCalls))
-
-	for _, toolCall := range toolCalls {
-		log.Printf("  -> 🛠️ 执行工具: %s, 参数: %s\n", toolCall.Name, string(toolCall.Arguments))
-
-		result := e.registry.Execute(ctx, toolCall)
-
-		if result.IsError {
-			log.Printf("  -> ❌ 工具执行报错: %s\n", result.Output)
-		} else {
-			log.Printf("  -> ✅ 工具执行成功 (返回 %d 字节)\n", len(result.Output))
-		}
-
-		observationMsg := schema.Message{
-			Role:       schema.RoleUser,
-			Content:    result.Output,
-			ToolCallID: toolCall.ID,
-		}
-		*contextHistory = append(*contextHistory, observationMsg)
-	}
 }
