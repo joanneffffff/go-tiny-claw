@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 
 	"github.com/joanneffffff/go-tiny-claw/internal/engine"
 	"github.com/joanneffffff/go-tiny-claw/internal/provider"
@@ -11,18 +13,40 @@ import (
 	"github.com/joanneffffff/go-tiny-claw/internal/tools"
 )
 
-// MockProvider is a mock LLM provider for testing
-type MockProvider struct{}
+// MockProvider simulates an LLM that calls tools
+type MockProvider struct {
+	callCount int
+}
 
 func (p *MockProvider) Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*schema.Message, error) {
+	p.callCount++
+
+	log.Printf("[MockProvider] Turn %d: generating response...", p.callCount)
+
+	// First call: return a tool call to bash
+	if p.callCount == 1 {
+		args, _ := json.Marshal(map[string]string{"command": "ls -la"})
+		return &schema.Message{
+			Role:    schema.RoleAssistant,
+			Content: "我需要先检查当前目录的文件结构。",
+			ToolCalls: []schema.ToolCall{
+				{ID: "call_1", Name: "bash", Arguments: args},
+			},
+		}, nil
+	}
+
+	// Second call: return final response
 	return &schema.Message{
 		Role:       schema.RoleAssistant,
-		Content:    "This is a mock response from MockProvider",
-		ToolCalls:  []schema.ToolCall{}, // No tool calls in mock
+		Content:    "我已经检查了目录结构，现在为你生成 README.md 大纲：\n\n# 项目结构\n- cmd/claw/\n- internal/engine/\n- internal/provider/",
+		ToolCalls: []schema.ToolCall{},
 	}, nil
 }
 
 func main() {
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
+	log.SetOutput(os.Stdout)
+
 	fmt.Println("🚀 欢迎来到 go-tiny-claw 引擎启动序列")
 
 	// 1. 初始化模型 Provider (大脑)
@@ -33,7 +57,6 @@ func main() {
 	// registry.Register(tools.NewBashTool())
 
 	// 3. 组装并启动核心 Engine (操作系统心脏)
-	// 设置工作目录
 	workDir := "/app"
 	agentEngine := engine.NewAgentEngine(llmProvider, registry, workDir)
 
