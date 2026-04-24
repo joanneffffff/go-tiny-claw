@@ -9,6 +9,7 @@ import (
     "github.com/joanneffffff/go-tiny-claw/internal/engine"
     "github.com/joanneffffff/go-tiny-claw/internal/provider"
     "github.com/joanneffffff/go-tiny-claw/internal/schema"
+    "github.com/joanneffffff/go-tiny-claw/internal/tools"
 )
 
 // 伪造的工具注册表 (用于测试 Provider 的工具提取能力)
@@ -41,30 +42,28 @@ func (m *mockRegistry) Execute(ctx context.Context, call schema.ToolCall) schema
     }
 }
 
+func (m *mockRegistry) Register(tool tools.Tool) {}
+
 func main() {
-    // 确保已设置 ANTHROPIC_API_KEY
     if os.Getenv("ANTHROPIC_API_KEY") == "" {
         log.Fatal("请先导出 ANTHROPIC_API_KEY 环境变量")
     }
 
     workDir, _ := os.Getwd()
 
-    // 初始化真实的 Provider大脑
     model := os.Getenv("ANTHROPIC_MODEL")
     if model == "" {
         model = "MiniMax-M2.7"
     }
     llmProvider := provider.NewCustomClaudeProvider(model)
-
-    // 注入伪造的工具注册表
     registry := &mockRegistry{}
 
-    // 实例化并运行引擎，开启 EnableThinking = true (开启慢思考阶段！)
-    eng := engine.NewAgentEngine(llmProvider, registry, workDir, true)
+    enableThinking := os.Getenv("ENABLE_THINKING") == "true"
+    eng := engine.NewAgentEngine(llmProvider, registry, workDir, enableThinking)
 
-    // 设定测试任务
     prompt := "我想去北京跑步，帮我查查天气适合吗？"
 
+    log.Printf("[Config] EnableThinking = %v", enableThinking)
     err := eng.Run(context.Background(), prompt)
     if err != nil {
         log.Fatalf("引擎运行崩溃: %v", err)

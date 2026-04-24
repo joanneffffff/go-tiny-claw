@@ -14,7 +14,12 @@
       "Bash(git push *)",
       "Bash(git reset *)",
       "Bash(go run *)",
-      "Bash(git checkout *)"
+      "Bash(git checkout *)",
+      "Bash(cmd /c \"set ANTHROPIC_API_KEY=sk-yptyip2TQhGsJEVl5aHYWf3i4GJF5oE4GS1UuhPqoeEc66tI&& set ANTHROPIC_BASE_URL=https://api.sfkey.cn/&& set ANTHROPIC_MODEL=MiniMax-M2.7&& go run ./cmd/claw/\")",
+      "Bash(export ANTHROPIC_API_KEY=\"sk-yptyip2TQhGsJEVl5aHYWf3i4GJF5oE4GS1UuhPqoeEc66tI\" ANTHROPIC_BASE_URL=\"https://api.sfkey.cn/\" ANTHROPIC_MODEL=\"MiniMax-M2.7\")",
+      "Bash(where go *)",
+      "Read(//c/go/**)",
+      "Read(//usr/local/go/**)"
     ]
   }
 }
