@@ -42,21 +42,24 @@ func (m *mockRegistry) Execute(ctx context.Context, call schema.ToolCall) schema
 }
 
 func main() {
-    // 确保已设置 ZHIPU_API_KEY
-    if os.Getenv("ZHIPU_API_KEY") == "" {
-        log.Fatal("请先导出 ZHIPU_API_KEY 环境变量")
+    // 确保已设置 ANTHROPIC_API_KEY
+    if os.Getenv("ANTHROPIC_API_KEY") == "" {
+        log.Fatal("请先导出 ANTHROPIC_API_KEY 环境变量")
     }
 
     workDir, _ := os.Getwd()
 
-    // 1. 初始化真实的 Provider大脑 (指向智谱 GLM-4.5)
-    // 这里你可以任意切换 NewZhipuClaudeProvider 或 NewZhipuOpenAIProvider，效果完全一致！
-    llmProvider := provider.NewZhipuOpenAIProvider("glm-4.5-air")
+    // 初始化真实的 Provider大脑
+    model := os.Getenv("ANTHROPIC_MODEL")
+    if model == "" {
+        model = "MiniMax-M2.7"
+    }
+    llmProvider := provider.NewCustomClaudeProvider(model)
 
-    // 2. 注入伪造的工具注册表
+    // 注入伪造的工具注册表
     registry := &mockRegistry{}
 
-    // 3. 实例化并运行引擎，开启 EnableThinking = true (开启慢思考阶段！)
+    // 实例化并运行引擎，开启 EnableThinking = true (开启慢思考阶段！)
     eng := engine.NewAgentEngine(llmProvider, registry, workDir, true)
 
     // 设定测试任务

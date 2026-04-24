@@ -12,7 +12,9 @@
       "Bash(git remote *)",
       "Bash(git branch *)",
       "Bash(git push *)",
-      "Bash(git reset *)"
+      "Bash(git reset *)",
+      "Bash(go run *)",
+      "Bash(git checkout *)"
     ]
   }
 }

@@ -17,12 +17,15 @@ type ClaudeProvider struct {
     model  string
 }
 
-func NewZhipuClaudeProvider(model string) *ClaudeProvider {
-    apiKey := os.Getenv("ZHIPU_API_KEY")
+func NewCustomClaudeProvider(model string) *ClaudeProvider {
+    apiKey := os.Getenv("ANTHROPIC_API_KEY")
     if apiKey == "" {
-        panic("请设置 ZHIPU_API_KEY 环境变量")
+        panic("请设置 ANTHROPIC_API_KEY 环境变量")
     }
-    baseURL := "https://open.bigmodel.cn/api/paas/v4/"
+    baseURL := os.Getenv("ANTHROPIC_BASE_URL")
+    if baseURL == "" {
+        panic("请设置 ANTHROPIC_BASE_URL 环境变量")
+    }
     return &ClaudeProvider{
         client: anthropic.NewClient(option.WithAPIKey(apiKey), option.WithBaseURL(baseURL)),
         model:  model,
