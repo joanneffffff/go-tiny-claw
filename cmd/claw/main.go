@@ -42,7 +42,7 @@ func (m *mockRegistry) Execute(ctx context.Context, call schema.ToolCall) schema
     }
 }
 
-func (m *mockRegistry) Register(tool tools.Tool) {}
+func (m *mockRegistry) Register(tool tools.BaseTool) {}
 
 func main() {
     if os.Getenv("ANTHROPIC_API_KEY") == "" {

@@ -1,95 +1,98 @@
+// internal/tools/registry.go
 package tools
 
 import (
-	"context"
-	"encoding/json"
-	"fmt"
+    "context"
+    "encoding/json"
+    "fmt"
+    "log"
 
-	"github.com/joanneffffff/go-tiny-claw/internal/schema"
+    "github.com/joanneffffff/go-tiny-claw/internal/schema"
 )
 
-// Tool 定义了可执行工具的接口
-type Tool interface {
-	// Execute runs the tool with given arguments
-	Execute(ctx context.Context, args map[string]string) (*schema.ToolResult, error)
+// BaseTool 是所有具体工具必须实现的通用接口
+type BaseTool interface {
+    // Name 返回工具的全局唯一名称 (大模型通过这个名字调用它)
+    Name() string
 
-	// Definition returns the tool definition for LLM
-	Definition() schema.ToolDefinition
+    // Definition 返回用于提交给大模型的工具元信息和参数 JSON Schema
+    Definition() schema.ToolDefinition
+
+    // Execute 接收大模型吐出的 JSON 参数，执行具体业务逻辑
+    // 注意：参数是 json.RawMessage，反序列化由各个具体工具内部自行处理
+    Execute(ctx context.Context, args json.RawMessage) (string, error)
 }
 
-// Registry 定义了工具的注册与分发执行接口
+
+// Registry 定义了工具的注册与分发接口
 type Registry interface {
-	// GetAvailableTools 返回当前系统挂载的所有可用工具的 Schema
-	GetAvailableTools() []schema.ToolDefinition
+    // Register 挂载一个新的工具到系统中
+    Register(tool BaseTool)
 
-	// Execute 实际执行模型请求的工具，并返回结果
-	Execute(ctx context.Context, call schema.ToolCall) schema.ToolResult
+    // GetAvailableTools 返回当前系统挂载的所有工具的 Schema，供 Main Loop 交给 Provider
+    GetAvailableTools() []schema.ToolDefinition
 
-	// Register 注册一个工具到注册表
-	Register(tool Tool)
+    // Execute 实际路由并执行模型请求的工具调用
+    Execute(ctx context.Context, call schema.ToolCall) schema.ToolResult
 }
 
-// registry 是工具注册表的默认实现
-type registry struct {
-	tools map[string]Tool
+// registryImpl 是 Registry 接口的默认实现
+type registryImpl struct {
+    // 使用 map 以工具的 Name 作为 Key 进行快速 O(1) 路由查找
+    tools map[string]BaseTool 
 }
 
-// NewRegistry creates a new tool registry
 func NewRegistry() Registry {
-	return &registry{
-		tools: make(map[string]Tool),
-	}
+    return &registryImpl{
+        tools: make(map[string]BaseTool),
+    }
 }
 
-// Register adds a tool to the registry
-func (r *registry) Register(tool Tool) {
-	r.tools[tool.Definition().Name] = tool
+func (r *registryImpl) Register(tool BaseTool) {
+    name := tool.Name()
+    if _, exists := r.tools[name]; exists {
+        log.Printf("[Warning] 工具 '%s' 已经被注册，将被覆盖。\n", name)
+    }
+    r.tools[name] = tool
+    log.Printf("[Registry] 成功挂载工具: %s\n", name)
 }
 
-// GetAvailableTools returns all registered tools as ToolDefinitions
-func (r *registry) GetAvailableTools() []schema.ToolDefinition {
-	defs := make([]schema.ToolDefinition, 0, len(r.tools))
-	for _, tool := range r.tools {
-		defs = append(defs, tool.Definition())
-	}
-	return defs
+func (r *registryImpl) GetAvailableTools() []schema.ToolDefinition {
+    var defs []schema.ToolDefinition
+    for _, tool := range r.tools {
+        defs = append(defs, tool.Definition())
+    }
+    return defs
 }
 
-// Execute finds and runs a tool by name
-func (r *registry) Execute(ctx context.Context, call schema.ToolCall) schema.ToolResult {
-	tool, ok := r.tools[call.Name]
-	if !ok {
-		return schema.ToolResult{
-			ToolCallID: call.ID,
-			Output:     fmt.Sprintf("tool not found: %s", call.Name),
-			IsError:    true,
-		}
-	}
+func (r *registryImpl) Execute(ctx context.Context, call schema.ToolCall) schema.ToolResult {
+    // 1. 路由查找：如果在注册表中找不到该工具，这是模型产生了幻觉，直接向模型抛出错误
+    tool, exists := r.tools[call.Name]
+    if !exists {
+        errMsg := fmt.Sprintf("Error: 系统中不存在名为 '%s' 的工具。", call.Name)
+        return schema.ToolResult{
+            ToolCallID: call.ID,
+            Output:     errMsg,
+            IsError:    true, // 标记为错误，模型看到后会尝试纠正
+        }
+    }
 
-	// Parse arguments from JSON
-	var args map[string]string
-	if call.Arguments != nil {
-		if err := json.Unmarshal(call.Arguments, &args); err != nil {
-			return schema.ToolResult{
-				ToolCallID: call.ID,
-				Output:     fmt.Sprintf("failed to parse arguments: %v", err),
-				IsError:    true,
-			}
-		}
-	}
+    // 2. 执行工具逻辑：将原始的 JSON 字节流直接丢给具体工具
+    output, err := tool.Execute(ctx, call.Arguments)
 
-	result, err := tool.Execute(ctx, args)
-	if err != nil {
-		return schema.ToolResult{
-			ToolCallID: call.ID,
-			Output:     err.Error(),
-			IsError:    true,
-		}
-	}
+    // 3. 封装结果：将执行结果或底层物理错误封装后返回给 Main Loop
+    if err != nil {
+        errMsg := fmt.Sprintf("Error executing %s: %v", call.Name, err)
+        return schema.ToolResult{
+            ToolCallID: call.ID,
+            Output:     errMsg,
+            IsError:    true,
+        }
+    }
 
-	return schema.ToolResult{
-		ToolCallID: call.ID,
-		Output:     result.Output,
-		IsError:    result.IsError,
-	}
+    return schema.ToolResult{
+        ToolCallID: call.ID,
+        Output:     output,
+        IsError:    false,
+    }
 }

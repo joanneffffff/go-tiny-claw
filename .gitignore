@@ -5,3 +5,6 @@
 *.so
 *.dylib
 main
+
+# Env
+.env
