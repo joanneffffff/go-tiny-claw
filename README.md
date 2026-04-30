@@ -17,8 +17,61 @@ go-tiny-claw/
 │   ├── memory/              # 基于文件系统的记忆状态存取
 │   └── feishu/              # 飞书机器人交互回调
 ├── go.mod
+├── go.sum
+├── Dockerfile
+├── .env                 # 环境变量（不提交到 git）
 └── README.md
 ```
+
+## 快速启动（Docker）
+
+### 1. 构建镜像
+
+```bash
+docker build -t go-tiny-claw .
+```
+
+### 2. 配置环境变量
+
+创建 `.env` 文件：
+
+```bash
+ANTHROPIC_API_KEY=your_api_key
+ANTHROPIC_BASE_URL=https://api.sfkey.cn/
+ANTHROPIC_MODEL=MiniMax-M2.7
+ENABLE_THINKING=false
+```
+
+### 3. 运行
+
+```bash
+# 方式一：通过 --env-file 注入环境变量
+docker run --rm --env-file .env -v "$(pwd)":/app go-tiny-claw
+
+# 方式二：通过 -e 直接注入
+docker run --rm \
+  -e ANTHROPIC_API_KEY=your_key \
+  -e ANTHROPIC_BASE_URL=https://api.sfkey.cn/ \
+  -e ANTHROPIC_MODEL=MiniMax-M2.7 \
+  -e ENABLE_THINKING=false \
+  -v "$(pwd)":/app \
+  go-tiny-claw
+```
+
+### 4. 本地开发（go run）
+
+```bash
+docker run --rm \
+  -e ANTHROPIC_API_KEY=your_key \
+  -e ANTHROPIC_BASE_URL=https://api.sfkey.cn/ \
+  -e ANTHROPIC_MODEL=MiniMax-M2.7 \
+  -e ENABLE_THINKING=false \
+  -v "$(pwd)":/app \
+  golang:1.26-alpine \
+  sh -c "cd /app && go run ./cmd/claw/"
+```
+
+---
 
 *** 工具输出卸载（Tool Call Offloading）***：工业级 Harness 的主流做法是在工具执行层实现输出卸载策略——当文件或命令输出超过阈值（通常为数千至数万字符）时，Harness 自动将完整内容写入磁盘临时目录，并向模型返回一段“头部预览 + 尾部预览 + 文件路径引用”的摘要消息，例如：“文件过长（共 5000 行，已卸载至 <path>）。以下为首尾预览，如需完整内容请调用 read_file('<path>')。” 通过这种方式，既保留了模型的决策依据，又倒逼其按需局部读取。
 

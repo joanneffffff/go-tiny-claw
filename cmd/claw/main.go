@@ -12,13 +12,17 @@ import (
 )
 
 func main() {
-    if os.Getenv("ZHIPU_API_KEY") == "" {
-        log.Fatal("请先导出 ZHIPU_API_KEY 环境变量")
+    if os.Getenv("ANTHROPIC_API_KEY") == "" {
+        log.Fatal("请先导出 ANTHROPIC_API_KEY 环境变量")
     }
 
     workDir, _ := os.Getwd()
 
-    llmProvider := provider.NewZhipuOpenAIProvider("glm-4.5-air")
+    model := os.Getenv("ANTHROPIC_MODEL")
+    if model == "" {
+        model = "MiniMax-M2.7"
+    }
+    llmProvider := provider.NewCustomClaudeProvider(model)
     registry := tools.NewRegistry()
 
     // 挂载极简工具集
