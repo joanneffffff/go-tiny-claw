@@ -23,6 +23,11 @@ func (t *WriteFileTool) Name() string {
     return "write_file"
 }
 
+// IsReadOnly 标识此工具为涉写操作，需要串行执行以避免竞态
+func (t *WriteFileTool) IsReadOnly() bool {
+    return false
+}
+
 func (t *WriteFileTool) Definition() schema.ToolDefinition {
     return schema.ToolDefinition{
         Name:        t.Name(),

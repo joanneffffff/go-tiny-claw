@@ -26,6 +26,11 @@ func (t *ReadFileTool) Name() string {
     return "read_file"
 }
 
+// IsReadOnly 标识此工具为只读操作，可以并发执行
+func (t *ReadFileTool) IsReadOnly() bool {
+    return true
+}
+
 // Definition 向大模型清晰地描述这个工具的用途和参数格式
 func (t *ReadFileTool) Definition() schema.ToolDefinition {
     return schema.ToolDefinition{

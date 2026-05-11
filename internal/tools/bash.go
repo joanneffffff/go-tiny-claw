@@ -23,6 +23,12 @@ func (t *BashTool) Name() string {
     return "bash"
 }
 
+// IsReadOnly 标识此工具为涉写操作，需要串行执行
+// bash 命令可能修改文件系统，因此保守地标记为非只读
+func (t *BashTool) IsReadOnly() bool {
+    return false
+}
+
 func (t *BashTool) Definition() schema.ToolDefinition {
     return schema.ToolDefinition{
         Name:        t.Name(),
