@@ -46,7 +46,8 @@ func (e *AgentEngine) WithMaxConcurrency(n int) *AgentEngine {
 }
 
 // Run 启动 Agent 的生命周期
-func (e *AgentEngine) Run(ctx context.Context, userPrompt string) error {
+// reporter 参数允许引擎向不同的展现层（终端、飞书、钉钉等）输出信息
+func (e *AgentEngine) Run(ctx context.Context, userPrompt string, reporter Reporter) error {
 	log.Printf("[Engine] 引擎启动，锁定工作区: %s\n", e.WorkDir)
 	log.Printf("[Engine] 慢思考模式 (Thinking Phase): %v\n", e.EnableThinking)
 	log.Printf("[Engine] 最大并发数 (MaxConcurrency): %d\n", e.MaxConcurrency)
@@ -77,6 +78,11 @@ func (e *AgentEngine) Run(ctx context.Context, userPrompt string) error {
 		if e.EnableThinking {
 			log.Println("[Engine][Phase 1] 剥夺工具访问权，强制进入慢思考与规划阶段...")
 
+			// 【触发 Reporter】: 开始慢思考
+			if reporter != nil {
+				reporter.OnThinking(ctx)
+			}
+
 			// 核心机制：传入的 availableTools 为 nil！
 			// 大模型看不到任何 JSON Schema，被迫只能输出纯文本的思考过程。
 			thinkResp, err := e.provider.Generate(ctx, contextHistory, nil)
@@ -86,7 +92,7 @@ func (e *AgentEngine) Run(ctx context.Context, userPrompt string) error {
 
 			// 如果模型输出了思考过程，我们将其作为 Assistant 消息追加到上下文中
 			if thinkResp.Content != "" {
-				fmt.Printf("🧠 [内部思考 Trace]: %s\n", thinkResp.Content)
+				log.Printf("🧠 [内部思考 Trace]: %s\n", thinkResp.Content)
 				contextHistory = append(contextHistory, *thinkResp)
 			}
 		}
@@ -105,8 +111,9 @@ func (e *AgentEngine) Run(ctx context.Context, userPrompt string) error {
 
 		contextHistory = append(contextHistory, *actionResp)
 
-		if actionResp.Content != "" {
-			fmt.Printf("🤖 [对外回复]: %s\n", actionResp.Content)
+		// 【触发 Reporter】: 输出阶段性总结或最终回复
+		if actionResp.Content != "" && reporter != nil {
+			reporter.OnMessage(ctx, actionResp.Content)
 		}
 
 		// ====================================================================
@@ -168,6 +175,11 @@ func (e *AgentEngine) Run(ctx context.Context, userPrompt string) error {
 				semaphore <- struct{}{}
 				defer func() { <-semaphore }() // 释放令牌
 
+				// 【触发 Reporter】: 报告即将在底层执行的工具
+				if reporter != nil {
+					reporter.OnToolCall(ctx, c.Name, string(c.Arguments))
+				}
+
 				log.Printf("  -> [ReadOnly] 🛠️ 触发并发执行: %s, 参数: %s\n", c.Name, string(c.Arguments))
 
 				result := e.registry.Execute(ctx, c)
@@ -176,6 +188,17 @@ func (e *AgentEngine) Run(ctx context.Context, userPrompt string) error {
 					log.Printf("  -> [ReadOnly] ❌ 工具执行报错: %s\n", result.Output)
 				} else {
 					log.Printf("  -> [ReadOnly] ✅ 工具执行成功 (返回 %d 字节)\n", len(result.Output))
+				}
+
+				// 【触发 Reporter】: 汇报工具物理执行的结果
+				// 为了防止大文件读取导致飞书消息过长被截断，我们仅汇报工具执行状态
+				// 注意：传递给大模型的 observationMsgs 依然是完整数据，只是人类看到的 Reporter 是缩略版
+				if reporter != nil {
+					displayOutput := result.Output
+					if len(displayOutput) > 200 {
+						displayOutput = displayOutput[:200] + "... (已截断)"
+					}
+					reporter.OnToolResult(ctx, c.Name, displayOutput, result.IsError)
 				}
 
 				// 回填结果到对应索引
@@ -206,6 +229,11 @@ func (e *AgentEngine) Run(ctx context.Context, userPrompt string) error {
 				writeMutex.Lock()
 				defer writeMutex.Unlock()
 
+				// 【触发 Reporter】: 报告即将在底层执行的工具
+				if reporter != nil {
+					reporter.OnToolCall(ctx, c.Name, string(c.Arguments))
+				}
+
 				log.Printf("  -> [Write] 🔒 触发串行执行: %s, 参数: %s\n", c.Name, string(c.Arguments))
 
 				result := e.registry.Execute(ctx, c)
@@ -214,6 +242,15 @@ func (e *AgentEngine) Run(ctx context.Context, userPrompt string) error {
 					log.Printf("  -> [Write] ❌ 工具执行报错: %s\n", result.Output)
 				} else {
 					log.Printf("  -> [Write] ✅ 工具执行成功 (返回 %d 字节)\n", len(result.Output))
+				}
+
+				// 【触发 Reporter】: 汇报工具物理执行的结果
+				if reporter != nil {
+					displayOutput := result.Output
+					if len(displayOutput) > 200 {
+						displayOutput = displayOutput[:200] + "... (已截断)"
+					}
+					reporter.OnToolResult(ctx, c.Name, displayOutput, result.IsError)
 				}
 
 				// 回填结果到对应索引
