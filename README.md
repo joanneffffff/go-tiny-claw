@@ -36,27 +36,28 @@ docker build -t go-tiny-claw .
 创建 `.env` 文件：
 
 ```bash
+# LLM 配置
 ANTHROPIC_API_KEY=your_api_key
 ANTHROPIC_BASE_URL=https://api.sfkey.cn/
-ANTHROPIC_MODEL=MiniMax-M2.7
+ANTHROPIC_MODEL=glm-5.1
 ENABLE_THINKING=false
+
+# 飞书机器人配置
+FEISHU_APP_ID=cli_xxxxxxxxxxxxx
+FEISHU_APP_SECRET=xxxxxxxxxxxxxxxx
 ```
 
 ### 3. 运行
 
 ```bash
-# 方式一：通过 --env-file 注入环境变量
-docker run --rm --env-file .env -v "$(pwd)":/app go-tiny-claw
+# WebSocket 模式（推荐，无需公网地址）
+docker run -d --env-file .env --name go-tiny-claw go-tiny-claw
 
-# 方式二：通过 -e 直接注入
-docker run --rm \
-  -e ANTHROPIC_API_KEY=your_key \
-  -e ANTHROPIC_BASE_URL=https://api.sfkey.cn/ \
-  -e ANTHROPIC_MODEL=MiniMax-M2.7 \
-  -e ENABLE_THINKING=false \
-  -v "$(pwd)":/app \
-  go-tiny-claw
+# 查看日志
+docker logs -f go-tiny-claw
 ```
+
+> **注意**：项目使用 WebSocket 模式连接飞书，无需公网 IP 或端口转发，适合内网环境运行。
 
 ### 4. 本地开发（go run）
 
@@ -64,8 +65,10 @@ docker run --rm \
 docker run --rm \
   -e ANTHROPIC_API_KEY=your_key \
   -e ANTHROPIC_BASE_URL=https://api.sfkey.cn/ \
-  -e ANTHROPIC_MODEL=MiniMax-M2.7 \
+  -e ANTHROPIC_MODEL=glm-5.1 \
   -e ENABLE_THINKING=false \
+  -e FEISHU_APP_ID=cli_xxx \
+  -e FEISHU_APP_SECRET=xxx \
   -v "$(pwd)":/app \
   golang:1.26-alpine \
   sh -c "cd /app && go run ./cmd/claw/"

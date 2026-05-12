@@ -11,16 +11,18 @@ go build -o main ./cmd/claw/
 # Run directly (requires environment variables)
 go run ./cmd/claw/
 
-# Run via Docker
+# Run via Docker (WebSocket mode, no public IP needed)
 docker build -t go-tiny-claw .
-docker run --rm --env-file .env -v "$(pwd)":/app go-tiny-claw
+docker run -d --env-file .env --name go-tiny-claw go-tiny-claw
 ```
 
 Required environment variables:
 - `ANTHROPIC_API_KEY` - API key for the LLM provider
 - `ANTHROPIC_BASE_URL` - Base URL for the API endpoint
-- `ANTHROPIC_MODEL` - Model name (default: MiniMax-M2.7)
+- `ANTHROPIC_MODEL` - Model name (default: glm-5.1)
 - `ENABLE_THINKING` - Enable two-phase ReAct loop (default: false)
+- `FEISHU_APP_ID` - Feishu bot app ID
+- `FEISHU_APP_SECRET` - Feishu bot app secret
 
 ## Architecture
 
@@ -53,6 +55,13 @@ All tools are sandboxed to `workDir` for security:
 - `read_file` - Read file contents (truncated at 8000 bytes)
 - `write_file` - Create/overwrite files (auto-creates parent directories)
 - `bash` - Execute shell commands (30s timeout, output truncated at 8000 bytes)
+
+### Feishu Integration
+
+The bot uses **WebSocket mode** to connect to Feishu servers:
+- No public IP or port forwarding required
+- Suitable for running in internal network environments
+- Auto-reconnects on connection failure
 
 ### Safety Mechanisms
 
