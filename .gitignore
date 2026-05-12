@@ -5,6 +5,7 @@
 *.so
 *.dylib
 main
+cloudflared
 
 # Env
 .env
