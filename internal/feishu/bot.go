@@ -74,6 +74,22 @@ func (b *FeishuBot) GetEventDispatcher() *dispatcher.EventDispatcher {
     return handler
 }
 
+// HandleMessage 返回消息处理函数，用于 WebSocket 模式
+func (b *FeishuBot) HandleMessage() func(ctx context.Context, event *larkim.P2MessageReceiveV1) error {
+    return func(ctx context.Context, event *larkim.P2MessageReceiveV1) error {
+        contentStr := *event.Event.Message.Content
+        contentStr = strings.TrimPrefix(contentStr, `{"text":"`)
+        contentStr = strings.TrimSuffix(contentStr, `"}`)
+
+        chatId := *event.Event.Message.ChatId
+        log.Printf("[Feishu] 收到会话 %s 消息: %s\n", chatId, contentStr)
+
+        go b.handleAgentRun(chatId, contentStr)
+
+        return nil
+    }
+}
+
 // handleAgentRun 是连接飞书与底层引擎的桥梁
 func (b *FeishuBot) handleAgentRun(chatId string, prompt string) {
     // 为当前聊天窗口实例化一个专属的 Reporter

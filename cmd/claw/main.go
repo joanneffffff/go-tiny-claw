@@ -2,11 +2,13 @@
 package main
 
 import (
+	"context"
 	"log"
-	"net/http"
 	"os"
 
-	"github.com/larksuite/oapi-sdk-go/v3/core/httpserverext"
+	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
+	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher"
+	"github.com/larksuite/oapi-sdk-go/v3/ws"
 
 	"github.com/joanneffffff/go-tiny-claw/internal/engine"
 	"github.com/joanneffffff/go-tiny-claw/internal/feishu"
@@ -42,23 +44,23 @@ func main() {
 
 	// 2. 初始化飞书 Bot 调度器
 	bot := feishu.NewFeishuBot(eng)
-	handler := httpserverext.NewEventHandlerFunc(bot.GetEventDispatcher())
 
-	// 3. 注册路由并启动 HTTP 服务
-	http.HandleFunc("/webhook/event", handler)
+	// 3. 使用 WebSocket 模式（不需要公网地址）
+	d := dispatcher.NewEventDispatcher("", ""). // WebSocket 模式不需要 token/key
+		OnP2MessageReceiveV1(bot.HandleMessage())
 
-	// 健康检查端点
-	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
-	})
+	wsClient := ws.NewClient(
+		os.Getenv("FEISHU_APP_ID"),
+		os.Getenv("FEISHU_APP_SECRET"),
+		ws.WithEventHandler(d),
+		ws.WithLogLevel(larkcore.LogLevelInfo),
+		ws.WithAutoReconnect(true),
+	)
 
-	port := ":48080"
-	log.Printf("🚀 go-tiny-claw 飞书服务端已启动，正在监听 %s 端口\n", port)
-	log.Printf("📍 Webhook 地址: http://<your-server-ip>%s/webhook/event\n", port)
+	log.Printf("🚀 go-tiny-claw 飞书服务端已启动（WebSocket 模式，无需公网地址）\n")
 
-	err := http.ListenAndServe(port, nil)
-	if err != nil {
-		log.Fatalf("服务器启动失败: %v", err)
+	// Start 会阻塞，自动重连
+	if err := wsClient.Start(context.Background()); err != nil {
+		log.Fatalf("WebSocket 客户端错误: %v", err)
 	}
 }
