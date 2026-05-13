@@ -6,6 +6,7 @@ import (
 	"log"
 	"sync"
 
+	ctxpkg "github.com/joanneffffff/go-tiny-claw/internal/context"
 	"github.com/joanneffffff/go-tiny-claw/internal/provider"
 	"github.com/joanneffffff/go-tiny-claw/internal/schema"
 	"github.com/joanneffffff/go-tiny-claw/internal/tools"
@@ -25,6 +26,9 @@ type AgentEngine struct {
 	// MaxConcurrency 全局最大并发数控制（Semaphore）
 	// 限制同时运行的工具数量，防止资源耗尽
 	MaxConcurrency int
+
+	// composer 动态组装 System Prompt
+	composer *ctxpkg.PromptComposer
 }
 
 func NewAgentEngine(p provider.LLMProvider, r tools.Registry, workDir string, enableThinking bool) *AgentEngine {
@@ -34,6 +38,7 @@ func NewAgentEngine(p provider.LLMProvider, r tools.Registry, workDir string, en
 		WorkDir:        workDir,
 		EnableThinking: enableThinking,
 		MaxConcurrency: 5, // 默认最大并发数为 5
+		composer:       ctxpkg.NewPromptComposer(workDir),
 	}
 }
 
@@ -52,11 +57,11 @@ func (e *AgentEngine) Run(ctx context.Context, userPrompt string, reporter Repor
 	log.Printf("[Engine] 慢思考模式 (Thinking Phase): %v\n", e.EnableThinking)
 	log.Printf("[Engine] 最大并发数 (MaxConcurrency): %d\n", e.MaxConcurrency)
 
+	// 【核心修改】动态组装 System Prompt，彻底替换掉以前硬编码的面条提示词！
+	systemMsg := e.composer.Build()
+
 	contextHistory := []schema.Message{
-		{
-			Role:    schema.RoleSystem,
-			Content: "You are go-tiny-claw, an expert coding assistant. You have full access to tools in the workspace.",
-		},
+		systemMsg, // 注入动态组装的内核、AGENTS.md 与 Skills
 		{
 			Role:    schema.RoleUser,
 			Content: userPrompt,
