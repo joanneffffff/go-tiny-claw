@@ -17,28 +17,21 @@ type AgentEngine struct {
 	provider provider.LLMProvider
 	registry tools.Registry
 
-	// WorkDir (工作区): 借鉴 OpenClaw 的理念，Agent 必须有一个明确的物理边界
-	WorkDir string
-
 	// EnableThinking 开启两阶段 ReAct 循环（先推理再行动）
 	EnableThinking bool
 
 	// MaxConcurrency 全局最大并发数控制（Semaphore）
 	// 限制同时运行的工具数量，防止资源耗尽
 	MaxConcurrency int
-
-	// composer 动态组装 System Prompt
-	composer *ctxpkg.PromptComposer
 }
 
-func NewAgentEngine(p provider.LLMProvider, r tools.Registry, workDir string, enableThinking bool) *AgentEngine {
+// 【注意】：我们移除了 Engine 层级的 WorkDir，因为 WorkDir 现在应该跟随 Session 走！
+func NewAgentEngine(p provider.LLMProvider, r tools.Registry, enableThinking bool) *AgentEngine {
 	return &AgentEngine{
 		provider:       p,
 		registry:       r,
-		WorkDir:        workDir,
 		EnableThinking: enableThinking,
 		MaxConcurrency: 5, // 默认最大并发数为 5
-		composer:       ctxpkg.NewPromptComposer(workDir),
 	}
 }
 
@@ -51,31 +44,28 @@ func (e *AgentEngine) WithMaxConcurrency(n int) *AgentEngine {
 }
 
 // Run 启动 Agent 的生命周期
+// 【核心改造】: 移除 userPrompt 参数，改为接收一个具体的 Session 实例
 // reporter 参数允许引擎向不同的展现层（终端、飞书、钉钉等）输出信息
-func (e *AgentEngine) Run(ctx context.Context, userPrompt string, reporter Reporter) error {
-	log.Printf("[Engine] 引擎启动，锁定工作区: %s\n", e.WorkDir)
+func (e *AgentEngine) Run(ctx context.Context, session *Session, reporter Reporter) error {
+	log.Printf("[Engine] 唤醒会话 [%s]，锁定工作区: %s\n", session.ID, session.WorkDir)
 	log.Printf("[Engine] 慢思考模式 (Thinking Phase): %v\n", e.EnableThinking)
 	log.Printf("[Engine] 最大并发数 (MaxConcurrency): %d\n", e.MaxConcurrency)
 
-	// 【核心修改】动态组装 System Prompt，彻底替换掉以前硬编码的面条提示词！
-	systemMsg := e.composer.Build()
-
-	contextHistory := []schema.Message{
-		systemMsg, // 注入动态组装的内核、AGENTS.md 与 Skills
-		{
-			Role:    schema.RoleUser,
-			Content: userPrompt,
-		},
-	}
-
-	turnCount := 0
+	// 根据当前 Session 的工作区，动态组装最新的 System Prompt
+	composer := ctxpkg.NewPromptComposer(session.WorkDir)
+	systemMsg := composer.Build()
 
 	for {
-		turnCount++
-		log.Printf("\n========== [Turn %d] 开始 ==========\n", turnCount)
-
 		// 获取当前挂载的所有工具定义
 		availableTools := e.registry.GetAvailableTools()
+
+		// 1. 【上下文组装】: System Prompt + 截取最近的 6 条消息作为 Working Memory
+		// 在实际业务中，由于工具返回结果可能很长，短期工作记忆往往设为 6-10 条足以维系连贯对话
+		workingMemory := session.GetWorkingMemory(6)
+
+		var contextHistory []schema.Message
+		contextHistory = append(contextHistory, systemMsg)
+		contextHistory = append(contextHistory, workingMemory...)
 
 		// ====================================================================
 		// Phase 1: 慢思考阶段 (Thinking) - 剥夺工具，强制规划
@@ -98,6 +88,9 @@ func (e *AgentEngine) Run(ctx context.Context, userPrompt string, reporter Repor
 			// 如果模型输出了思考过程，我们将其作为 Assistant 消息追加到上下文中
 			if thinkResp.Content != "" {
 				log.Printf("🧠 [内部思考 Trace]: %s\n", thinkResp.Content)
+				// 将思考过程持久化到 Session 中！
+				session.Append(*thinkResp)
+				// 把它追加到当前这一轮的临时上下文中，供 Action 阶段使用
 				contextHistory = append(contextHistory, *thinkResp)
 			}
 		}
@@ -109,11 +102,15 @@ func (e *AgentEngine) Run(ctx context.Context, userPrompt string, reporter Repor
 
 		// 此时的 contextHistory 中已经包含了上一阶段模型自己的 Thinking Trace。
 		// 模型会顺着自己的逻辑，结合恢复的 availableTools 发起精准的工具调用。
+		log.Println("[Engine] 正在调用 LLM API...")
 		actionResp, err := e.provider.Generate(ctx, contextHistory, availableTools)
 		if err != nil {
 			return fmt.Errorf("Action 阶段生成失败: %w", err)
 		}
+		log.Println("[Engine] LLM API 响应完成")
 
+		// 将大模型的行动响应持久化到 Session 中
+		session.Append(*actionResp)
 		contextHistory = append(contextHistory, *actionResp)
 
 		// 【触发 Reporter】: 输出阶段性总结或最终回复
@@ -273,10 +270,8 @@ func (e *AgentEngine) Run(ctx context.Context, userPrompt string, reporter Repor
 		wg.Wait()
 		log.Println("[Engine] 所有工具执行完毕，开始聚合观察结果 (Observation)...")
 
-		// 8. 聚合装填：将结果按照原本的顺序，一次性追加到上下文时间线中
-		for _, obs := range observationMsgs {
-			contextHistory = append(contextHistory, obs)
-		}
+		// 8. 将所有的工具执行结果（Observation）持久化到 Session 中，开启下一轮的复盘与推理
+		session.Append(observationMsgs...)
 	}
 
 	return nil

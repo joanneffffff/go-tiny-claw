@@ -5,75 +5,76 @@ import (
 	"context"
 	"log"
 	"os"
+	"sync"
+	"time"
 
 	"github.com/joanneffffff/go-tiny-claw/internal/engine"
 	"github.com/joanneffffff/go-tiny-claw/internal/provider"
+	"github.com/joanneffffff/go-tiny-claw/internal/schema"
 	"github.com/joanneffffff/go-tiny-claw/internal/tools"
 )
 
 func main() {
-	// 检查必要的环境变量
 	if os.Getenv("ANTHROPIC_API_KEY") == "" {
 		log.Fatal("请先导出 ANTHROPIC_API_KEY 环境变量")
 	}
 
-	workDir, _ := os.Getwd()
-
 	model := os.Getenv("ANTHROPIC_MODEL")
 	if model == "" {
-		model = "MiniMax-M2.7"
+		model = "glm-5.1"
 	}
 	llmProvider := provider.NewCustomClaudeProvider(model)
 
 	registry := tools.NewRegistry()
-	registry.Register(tools.NewReadFileTool(workDir))
-	registry.Register(tools.NewWriteFileTool(workDir))
-	registry.Register(tools.NewBashTool(workDir))
+	registry.Register(tools.NewReadFileTool("/tmp/project_front"))
 
-	// 实例化引擎，开启慢思考
-	eng := engine.NewAgentEngine(llmProvider, registry, workDir, true)
-
-	// 注入终端输出器
+	eng := engine.NewAgentEngine(llmProvider, registry, false)
 	reporter := engine.NewTerminalReporter()
 
-	prompt := `
-	我需要在当前目录下新建一个 ping.go，提供一个简单的 http ping 接口。
-	写完之后，帮我把代码用 git 提交一下。
-	`
+	var wg sync.WaitGroup
 
-	err := eng.Run(context.Background(), prompt, reporter)
-	if err != nil {
-		log.Fatalf("引擎运行崩溃: %v", err)
-	}
+	// ================= 模拟并发场景 1：飞书前端群 =================
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		sessionA := engine.GlobalSessionMgr.GetOrCreate("chat_front_001", "/tmp/project_front")
 
-	// ========== WebSocket 模式（已注释）==========
-	// 如需启用飞书机器人，取消以下注释并注释上方的 CLI 模式代码
-	//
-	// import (
-	//     larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
-	//     "github.com/larksuite/oapi-sdk-go/v3/event/dispatcher"
-	//     "github.com/larksuite/oapi-sdk-go/v3/ws"
-	//     "github.com/joanneffffff/go-tiny-claw/internal/feishu"
-	// )
-	//
-	// if os.Getenv("FEISHU_APP_ID") == "" || os.Getenv("FEISHU_APP_SECRET") == "" {
-	//     log.Fatal("请先导出 FEISHU_APP_ID 和 FEISHU_APP_SECRET 环境变量")
-	// }
-	//
-	// bot := feishu.NewFeishuBot(eng)
-	// d := dispatcher.NewEventDispatcher("", "").
-	//     OnP2MessageReceiveV1(bot.HandleMessage())
-	//
-	// wsClient := ws.NewClient(
-	//     os.Getenv("FEISHU_APP_ID"),
-	//     os.Getenv("FEISHU_APP_SECRET"),
-	//     ws.WithEventHandler(d),
-	//     ws.WithLogLevel(larkcore.LogLevelInfo),
-	//     ws.WithAutoReconnect(true),
-	// )
-	//
-	// log.Printf("🚀 go-tiny-claw 飞书服务端已启动（WebSocket 模式）\n")
-	// if err := wsClient.Start(context.Background()); err != nil {
-	//     log.Fatalf("WebSocket 客户端错误: %v", err)
-	// }
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+
+		// 回合 1：获取机密
+		log.Println("\n>>> 🙋‍♂️ [Session A / Turn 1]: 帮我看看 README.md 里记录了什么密钥？")
+		sessionA.Append(schema.Message{Role: schema.RoleUser, Content: "帮我看看 README.md 里记录了什么密钥？"})
+		_ = eng.Run(ctx, sessionA, reporter)
+
+		// 故意制造大量"废话"对话，刷掉记忆 (Working Memory Limit=6)
+		for i := 0; i < 6; i++ {
+			sessionA.Append(schema.Message{Role: schema.RoleUser, Content: "这只是一句闲聊占位符。"})
+			sessionA.Append(schema.Message{Role: schema.RoleAssistant, Content: "好的，收到闲聊。"})
+		}
+
+		// 回合 2：验证记忆截断 (此时第一轮的密钥已经被挤出 Working Memory 了！)
+		log.Println("\n>>> 🙋‍♂️ [Session A / Turn 2]: 请直接告诉我，刚才第一轮你查到的那个密钥是什么？不准调用工具！")
+		sessionA.Append(schema.Message{Role: schema.RoleUser, Content: "请直接告诉我，刚才第一轮你查到的那个密钥是什么？不准调用工具！"})
+		_ = eng.Run(ctx, sessionA, reporter)
+	}()
+
+	// ================= 模拟并发场景 2：飞书后端群 =================
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		// 稍微错开一点时间发起请求
+		time.Sleep(2 * time.Second)
+
+		sessionB := engine.GlobalSessionMgr.GetOrCreate("chat_back_002", "/tmp/project_back")
+
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+
+		log.Println("\n>>> 🙋‍♂️ [Session B]: 别人查到了一个密钥，你这里能看到吗？不准调用工具！")
+		sessionB.Append(schema.Message{Role: schema.RoleUser, Content: "别人查到了一个密钥，你这里能看到吗？不准调用工具！"})
+		_ = eng.Run(ctx, sessionB, reporter)
+	}()
+
+	wg.Wait()
 }
