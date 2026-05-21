@@ -23,15 +23,19 @@ type AgentEngine struct {
 	// MaxConcurrency 全局最大并发数控制（Semaphore）
 	// 限制同时运行的工具数量，防止资源耗尽
 	MaxConcurrency int
+
+	// compactor 上下文压缩器，防止大模型 OOM
+	compactor *ctxpkg.Compactor
 }
 
-// 【注意】：我们移除了 Engine 层级的 WorkDir，因为 WorkDir 现在应该跟随 Session 走！
 func NewAgentEngine(p provider.LLMProvider, r tools.Registry, enableThinking bool) *AgentEngine {
 	return &AgentEngine{
 		provider:       p,
 		registry:       r,
 		EnableThinking: enableThinking,
 		MaxConcurrency: 5, // 默认最大并发数为 5
+		// 【初始化压缩器】：水位线阈值 3000 字符，保护最近 6 条消息
+		compactor: ctxpkg.NewCompactor(3000, 6),
 	}
 }
 
@@ -59,13 +63,16 @@ func (e *AgentEngine) Run(ctx context.Context, session *Session, reporter Report
 		// 获取当前挂载的所有工具定义
 		availableTools := e.registry.GetAvailableTools()
 
-		// 1. 【上下文组装】: System Prompt + 截取最近的 6 条消息作为 Working Memory
-		// 在实际业务中，由于工具返回结果可能很长，短期工作记忆往往设为 6-10 条足以维系连贯对话
-		workingMemory := session.GetWorkingMemory(6)
+		// 1. 从 Session 提取出近期的 Working Memory (例如最近 20 条，给压缩器留下充足的判断空间)
+		workingMemory := session.GetWorkingMemory(20)
 
 		var contextHistory []schema.Message
 		contextHistory = append(contextHistory, systemMsg)
 		contextHistory = append(contextHistory, workingMemory...)
+
+		// 2. 【核心注入点】: 在向 Provider 发起推理前，过一遍内存压缩器！
+		// 无论你带出了多少上下文，如果字符总数超标，早期日志将被掩码化，超大日志将被掐头去尾
+		compactedContext := e.compactor.Compact(contextHistory)
 
 		// ====================================================================
 		// Phase 1: 慢思考阶段 (Thinking) - 剥夺工具，强制规划
@@ -80,7 +87,7 @@ func (e *AgentEngine) Run(ctx context.Context, session *Session, reporter Report
 
 			// 核心机制：传入的 availableTools 为 nil！
 			// 大模型看不到任何 JSON Schema，被迫只能输出纯文本的思考过程。
-			thinkResp, err := e.provider.Generate(ctx, contextHistory, nil)
+			thinkResp, err := e.provider.Generate(ctx, compactedContext, nil)
 			if err != nil {
 				return fmt.Errorf("Thinking 阶段生成失败: %w", err)
 			}
@@ -91,7 +98,7 @@ func (e *AgentEngine) Run(ctx context.Context, session *Session, reporter Report
 				// 将思考过程持久化到 Session 中！
 				session.Append(*thinkResp)
 				// 把它追加到当前这一轮的临时上下文中，供 Action 阶段使用
-				contextHistory = append(contextHistory, *thinkResp)
+				compactedContext = append(compactedContext, *thinkResp)
 			}
 		}
 
@@ -100,18 +107,19 @@ func (e *AgentEngine) Run(ctx context.Context, session *Session, reporter Report
 		// ====================================================================
 		log.Println("[Engine][Phase 2] 恢复工具挂载，等待模型采取行动...")
 
-		// 此时的 contextHistory 中已经包含了上一阶段模型自己的 Thinking Trace。
+		// 此时的 compactedContext 中已经包含了上一阶段模型自己的 Thinking Trace。
 		// 模型会顺着自己的逻辑，结合恢复的 availableTools 发起精准的工具调用。
 		log.Println("[Engine] 正在调用 LLM API...")
-		actionResp, err := e.provider.Generate(ctx, contextHistory, availableTools)
+		actionResp, err := e.provider.Generate(ctx, compactedContext, availableTools)
 		if err != nil {
 			return fmt.Errorf("Action 阶段生成失败: %w", err)
 		}
 		log.Println("[Engine] LLM API 响应完成")
 
-		// 将大模型的行动响应持久化到 Session 中
+		// 【驾驭精髓】：注意，写入 Session（硬盘/全量内存）的永远是全量的真实响应，不受 Compact 影响！
+		// Compact 只作用于本轮发给大模型的那个临时 Context。
 		session.Append(*actionResp)
-		contextHistory = append(contextHistory, *actionResp)
+		compactedContext = append(compactedContext, *actionResp)
 
 		// 【触发 Reporter】: 输出阶段性总结或最终回复
 		if actionResp.Content != "" && reporter != nil {
