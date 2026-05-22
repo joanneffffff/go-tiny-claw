@@ -12,7 +12,7 @@ go-tiny-claw/
 ├── internal/
 │   ├── engine/              # MainLoop 核心实现
 │   ├── provider/            # 大模型接口抽象与具体厂商 SDK 实现
-│   ├── context/             # Token 监控、Prompt 动态组装
+│   ├── context/             # Token 监控、Prompt 动态组装、Compactor
 │   ├── tools/               # 工具注册表、Middleware、基础极简工具
 │   ├── memory/              # 基于文件系统的记忆状态存取
 │   └── feishu/              # 飞书机器人交互回调
@@ -59,26 +59,174 @@ docker logs -f go-tiny-claw
 
 > **注意**：项目使用 WebSocket 模式连接飞书，无需公网 IP 或端口转发，适合内网环境运行。
 
-### 4. 本地开发（go run）
+### 4. 本地开发（持久化容器）
+
+创建一个持久化的开发容器，代码挂载本地目录，Docker Desktop 启动时自动运行：
 
 ```bash
-docker run --rm \
-  -e ANTHROPIC_API_KEY=your_key \
-  -e ANTHROPIC_BASE_URL=https://api.sfkey.cn/ \
-  -e ANTHROPIC_MODEL=glm-5.1 \
-  -e ENABLE_THINKING=false \
-  -e FEISHU_APP_ID=cli_xxx \
-  -e FEISHU_APP_SECRET=xxx \
-  -v "$(pwd)":/app \
+# Windows (Git Bash) 需要加 MSYS_NO_PATHCONV=1
+MSYS_NO_PATHCONV=1 docker run -d --name go-tiny-claw \
+  -v "D:/projects/go-tiny-claw:/app" \
+  -w /app \
+  --restart=always \
   golang:1.26-alpine \
-  sh -c "cd /app && go run ./cmd/claw/"
+  tail -f /dev/null
+
+# 复制环境变量到容器
+docker cp .env go-tiny-claw:/app/.env
+```
+
+以后直接使用：
+
+```bash
+# 进入容器
+docker exec -it go-tiny-claw sh
+
+# 运行 Agent（普通模式）
+docker exec go-tiny-claw go run ./cmd/claw/ -prompt "你的任务"
+
+# 运行 Agent（计划模式）
+docker exec go-tiny-claw go run ./cmd/claw/ -prompt "你的任务"
+
+# 编译
+docker exec go-tiny-claw go build -o claw ./cmd/claw/
 ```
 
 ---
 
-*** 工具输出卸载（Tool Call Offloading）***：工业级 Harness 的主流做法是在工具执行层实现输出卸载策略——当文件或命令输出超过阈值（通常为数千至数万字符）时，Harness 自动将完整内容写入磁盘临时目录，并向模型返回一段“头部预览 + 尾部预览 + 文件路径引用”的摘要消息，例如：“文件过长（共 5000 行，已卸载至 <path>）。以下为首尾预览，如需完整内容请调用 read_file('<path>')。” 通过这种方式，既保留了模型的决策依据，又倒逼其按需局部读取。
+## 核心功能
 
-*** 结合全局 Context Compaction ***：即使我们在单工具内通过卸载策略放宽了读取限制，在引擎的全局层面，工业级 Harness 依然在 Main Loop 中设有上下文窗口监控机制。当 Token 使用量接近模型上下文窗口的预设阈值（通常为 75%~98%）时，Harness 会触发 Compaction——对历史会话进行压缩（策略有多种，比如智能摘要等)，保留架构决策、未解决的 Bug 等高价值信息，裁剪冗余工具输出，使 Agent 得以在不丢失关键上下文的前提下继续长时运行。关于这道全局级别的终极防 OOM（内存溢出）防线，我们将在专栏的 第 12 讲 为你揭秘。
+### 1. Session 管理（多用户隔离）
+
+每个用户/群聊拥有独立的 Session，历史记录互不干扰：
+
+```go
+// 获取或创建 Session
+sessionA := engine.GlobalSessionMgr.GetOrCreate("chat_front_001", "/tmp/project_front")
+sessionB := engine.GlobalSessionMgr.GetOrCreate("chat_back_002", "/tmp/project_back")
+
+// Session 隔离：Session A 看不到 Session B 的历史
+```
+
+**Working Memory 截断**：只保留最近 N 条消息，防止上下文爆炸：
+
+```go
+workingMemory := session.GetWorkingMemory(20)  // 只取最近 20 条
+```
+
+### 2. Compactor（上下文压缩，防 OOM）
+
+当上下文长度超过阈值时，自动压缩早期历史：
+
+```go
+compactor := ctxpkg.NewCompactor(3000, 6)  // 阈值 3000 字符，保护最近 6 条
+
+compactedContext := compactor.Compact(contextHistory)
+```
+
+**双重防线策略**：
+
+| 防线 | 范围 | 策略 |
+|------|------|------|
+| 第一道 | 远期历史 | 完全掩码：`...[早期内容已清理]...` |
+| 第二道 | 短期保护区 | 掐头去尾：保留首尾各 500 字符 |
+
+**关键设计**：压缩只影响"发给大模型的临时上下文"，Session 中仍保存全量数据。
+
+### 3. Plan Mode（计划模式，断点续传）
+
+开启计划模式后，Agent 会将任务规划和进度持久化到文件：
+
+```go
+eng := engine.NewAgentEngine(provider, registry, false).WithPlanMode(true)
+```
+
+**工作流程**：
+
+1. **STEP 1: 环境嗅探** - 检查 `PLAN.md` 和 `TODO.md` 是否存在
+2. **分支 A（全新任务）** - 创建规划文档
+3. **分支 B（断点续传）** - 读取 TODO.md，找到第一个未完成的任务继续执行
+4. **STEP 2: 单步执行 + 实时打勾** - 每完成一步立即更新 TODO.md
+
+**示例**：
+
+```bash
+# 第一次运行（创建项目）
+docker exec go-tiny-claw go run ./cmd/claw/ -prompt "搭建一个 Web Server"
+
+# 中途停止后，再次运行（断点续传）
+docker exec go-tiny-claw go run ./cmd/claw/ -prompt "搭建一个 Web Server"
+# Agent 会检测到 TODO.md 存在，从上次中断的地方继续
+```
+
+### 4. Thinking Phase（慢思考模式）
+
+开启后，Agent 会先"思考"再行动：
+
+```go
+eng := engine.NewAgentEngine(provider, registry, true)  // 第三个参数开启思考模式
+```
+
+**两阶段 ReAct 循环**：
+
+1. **Phase 1: Thinking** - 剥夺工具，强制模型输出推理过程
+2. **Phase 2: Action** - 恢复工具，模型根据推理结果执行
+
+### 5. 并发控制
+
+- **只读工具**：并发执行
+- **涉写工具**：串行执行（加锁）
+- **全局并发数**：Semaphore 控制
+
+```go
+eng := engine.NewAgentEngine(provider, registry, false).WithMaxConcurrency(10)
+```
+
+---
+
+## 功能组合示例
+
+### 场景 1：多用户聊天机器人
+
+```go
+// 每个群聊一个 Session，自动隔离
+session := engine.GlobalSessionMgr.GetOrCreate(chatID, workDir)
+
+// 关闭思考模式（快速响应），关闭计划模式（简单问答）
+eng := engine.NewAgentEngine(provider, registry, false).WithPlanMode(false)
+
+eng.Run(ctx, session, reporter)
+```
+
+### 场景 2：长程任务（断点续传）
+
+```go
+// 开启计划模式，任务进度持久化到文件
+eng := engine.NewAgentEngine(provider, registry, false).WithPlanMode(true)
+
+// 即使进程重启，只要 TODO.md 还在，任务就能继续
+eng.Run(ctx, session, reporter)
+```
+
+### 场景 3：复杂推理任务
+
+```go
+// 开启思考模式，先规划再行动
+eng := engine.NewAgentEngine(provider, registry, true).WithPlanMode(true)
+
+// Thinking + Plan Mode 双重保障
+eng.Run(ctx, session, reporter)
+```
+
+### 场景 4：大文件处理（防 OOM）
+
+```go
+// Compactor 自动压缩超长上下文
+// 默认配置：阈值 3000 字符，保护最近 6 条消息
+
+// 读取大文件后，工具返回结果会被自动压缩
+// Session 中仍保存完整数据，只是发给模型的上下文被压缩
+```
 
 ---
 

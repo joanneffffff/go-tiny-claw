@@ -20,6 +20,9 @@ type AgentEngine struct {
 	// EnableThinking 开启两阶段 ReAct 循环（先推理再行动）
 	EnableThinking bool
 
+	// PlanMode 开启计划模式（状态外部化、断点续传）
+	PlanMode bool
+
 	// MaxConcurrency 全局最大并发数控制（Semaphore）
 	// 限制同时运行的工具数量，防止资源耗尽
 	MaxConcurrency int
@@ -33,10 +36,17 @@ func NewAgentEngine(p provider.LLMProvider, r tools.Registry, enableThinking boo
 		provider:       p,
 		registry:       r,
 		EnableThinking: enableThinking,
-		MaxConcurrency: 5, // 默认最大并发数为 5
+		PlanMode:       false, // 默认关闭计划模式
+		MaxConcurrency: 5,     // 默认最大并发数为 5
 		// 【初始化压缩器】：水位线阈值 3000 字符，保护最近 6 条消息
 		compactor: ctxpkg.NewCompactor(3000, 6),
 	}
+}
+
+// WithPlanMode 设置计划模式（Builder 模式）
+func (e *AgentEngine) WithPlanMode(enabled bool) *AgentEngine {
+	e.PlanMode = enabled
+	return e
 }
 
 // WithMaxConcurrency 设置最大并发数（Builder 模式）
@@ -53,10 +63,12 @@ func (e *AgentEngine) WithMaxConcurrency(n int) *AgentEngine {
 func (e *AgentEngine) Run(ctx context.Context, session *Session, reporter Reporter) error {
 	log.Printf("[Engine] 唤醒会话 [%s]，锁定工作区: %s\n", session.ID, session.WorkDir)
 	log.Printf("[Engine] 慢思考模式 (Thinking Phase): %v\n", e.EnableThinking)
+	log.Printf("[Engine] 计划模式 (Plan Mode): %v\n", e.PlanMode)
 	log.Printf("[Engine] 最大并发数 (MaxConcurrency): %d\n", e.MaxConcurrency)
 
 	// 根据当前 Session 的工作区，动态组装最新的 System Prompt
-	composer := ctxpkg.NewPromptComposer(session.WorkDir)
+	// 【核心重构】：传入 PlanMode 状态，决定是否注入状态外部化指令
+	composer := ctxpkg.NewPromptComposer(session.WorkDir, e.PlanMode)
 	systemMsg := composer.Build()
 
 	for {
