@@ -182,6 +182,49 @@ eng := engine.NewAgentEngine(provider, registry, true)  // 第三个参数开启
 eng := engine.NewAgentEngine(provider, registry, false).WithMaxConcurrency(10)
 ```
 
+### 6. RecoveryManager（自愈机制）
+
+当工具执行失败时，RecoveryManager 会分析错误特征并注入救援指南，引导模型自愈：
+
+```python
+# 伪代码示意
+工具执行失败 → RecoveryManager 分析错误特征 → 注入救援指南 → 返回给模型 → 模型自愈重试
+```
+
+**示例流程**：
+
+```
+第一轮：edit_file 调用失败
+  错误: "在文件中未找到 old_text"
+  
+  ↓ RecoveryManager 注入救援指南
+  
+  返回给模型:
+  "在文件中未找到 old_text
+  
+   [系统救援指南]: 你提供的 old_text 与文件当前内容不一致。
+   请先使用 read_file 重新读取文件，获取准确内容后再编辑。"
+
+第二轮：模型根据指南调用 read_file
+  获取正确的文件内容
+
+第三轮：模型用正确的 old_text 再次调用 edit_file
+  成功！
+```
+
+**错误特征匹配表**：
+
+| 工具 | 错误特征 | 救援指南 |
+|------|----------|----------|
+| `edit_file` | "未找到 old_text" | 先用 `read_file` 重新读取文件 |
+| `edit_file` | "匹配到了多处" | 增加 old_text 上下文确保唯一性 |
+| `read_file/write_file` | "no such file" | 用 `bash ls/find` 查找正确路径 |
+| `read_file/write_file` | "permission denied" | 检查权限或修改其他文件 |
+| `bash` | "command not found" | 思考替代命令或安装脚本 |
+| `bash` | "timeout" | 常驻服务转入后台执行 |
+
+**关键设计**：错误信息作为 Observation 返回给模型（而非 Go error），让模型理解问题并自我纠正。
+
 ---
 
 ## 功能组合示例
