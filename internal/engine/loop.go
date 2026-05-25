@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 
 	ctxpkg "github.com/joanneffffff/go-tiny-claw/internal/context"
@@ -29,6 +30,9 @@ type AgentEngine struct {
 
 	// compactor 上下文压缩器，防止大模型 OOM
 	compactor *ctxpkg.Compactor
+
+	// recovery 自愈管理器，在工具执行失败时注入救援指南
+	recovery *ctxpkg.RecoveryManager
 }
 
 func NewAgentEngine(p provider.LLMProvider, r tools.Registry, enableThinking bool) *AgentEngine {
@@ -40,6 +44,8 @@ func NewAgentEngine(p provider.LLMProvider, r tools.Registry, enableThinking boo
 		MaxConcurrency: 5,     // 默认最大并发数为 5
 		// 【初始化压缩器】：水位线阈值 3000 字符，保护最近 6 条消息
 		compactor: ctxpkg.NewCompactor(3000, 6),
+		// 【初始化自愈管理器】：在工具失败时注入救援指南
+		recovery: ctxpkg.NewRecoveryManager(),
 	}
 }
 
@@ -86,6 +92,9 @@ func (e *AgentEngine) Run(ctx context.Context, session *Session, reporter Report
 		// 无论你带出了多少上下文，如果字符总数超标，早期日志将被掩码化，超大日志将被掐头去尾
 		compactedContext := e.compactor.Compact(contextHistory)
 
+		// 用于存储当前回合的思考内容（Thinking Phase 产生）
+		var currentTurnThinkingContent string
+
 		// ====================================================================
 		// Phase 1: 慢思考阶段 (Thinking) - 剥夺工具，强制规划
 		// ====================================================================
@@ -104,11 +113,10 @@ func (e *AgentEngine) Run(ctx context.Context, session *Session, reporter Report
 				return fmt.Errorf("Thinking 阶段生成失败: %w", err)
 			}
 
-			// 如果模型输出了思考过程，我们将其作为 Assistant 消息追加到上下文中
+			// 如果模型输出了思考过程，保存到变量中，供 Action 阶段合并
 			if thinkResp.Content != "" {
 				log.Printf("🧠 [内部思考 Trace]: %s\n", thinkResp.Content)
-				// 将思考过程持久化到 Session 中！
-				session.Append(*thinkResp)
+				currentTurnThinkingContent = thinkResp.Content
 				// 把它追加到当前这一轮的临时上下文中，供 Action 阶段使用
 				compactedContext = append(compactedContext, *thinkResp)
 			}
@@ -128,10 +136,14 @@ func (e *AgentEngine) Run(ctx context.Context, session *Session, reporter Report
 		}
 		log.Println("[Engine] LLM API 响应完成")
 
-		// 【驾驭精髓】：注意，写入 Session（硬盘/全量内存）的永远是全量的真实响应，不受 Compact 影响！
-		// Compact 只作用于本轮发给大模型的那个临时 Context。
-		session.Append(*actionResp)
-		compactedContext = append(compactedContext, *actionResp)
+		// 【关键修复】：合并 Thinking 和 Action 为一条合法的 Assistant 消息
+		// 避免 API 报错 "messages must follow role sequence"
+		finalAssistantMsg := schema.Message{
+			Role:      schema.RoleAssistant,
+			Content:   strings.TrimSpace(currentTurnThinkingContent + "\n" + actionResp.Content),
+			ToolCalls: actionResp.ToolCalls,
+		}
+		session.Append(finalAssistantMsg)
 
 		// 【触发 Reporter】: 输出阶段性总结或最终回复
 		if actionResp.Content != "" && reporter != nil {
@@ -206,27 +218,28 @@ func (e *AgentEngine) Run(ctx context.Context, session *Session, reporter Report
 
 				result := e.registry.Execute(ctx, c)
 
+				// 【核心拦截与注入】：如果工具执行失败，交由 RecoveryManager 注入救援指南
+				finalOutput := result.Output
 				if result.IsError {
-					log.Printf("  -> [ReadOnly] ❌ 工具执行报错: %s\n", result.Output)
+					finalOutput = e.recovery.AnalyzeAndInject(c.Name, result.Output)
+					log.Printf("  -> [ReadOnly] ❌ 注入救援指南\n")
 				} else {
 					log.Printf("  -> [ReadOnly] ✅ 工具执行成功 (返回 %d 字节)\n", len(result.Output))
 				}
 
 				// 【触发 Reporter】: 汇报工具物理执行的结果
-				// 为了防止大文件读取导致飞书消息过长被截断，我们仅汇报工具执行状态
-				// 注意：传递给大模型的 observationMsgs 依然是完整数据，只是人类看到的 Reporter 是缩略版
 				if reporter != nil {
-					displayOutput := result.Output
+					displayOutput := finalOutput
 					if len(displayOutput) > 200 {
 						displayOutput = displayOutput[:200] + "... (已截断)"
 					}
 					reporter.OnToolResult(ctx, c.Name, displayOutput, result.IsError)
 				}
 
-				// 回填结果到对应索引
+				// 回填结果到对应索引（使用注入过 Recovery Hint 的最终结果）
 				obsMsg := schema.Message{
 					Role:       schema.RoleUser,
-					Content:    result.Output,
+					Content:    finalOutput,
 					ToolCallID: c.ID,
 				}
 				observationMsgs[callIndexMap[c.ID]] = obsMsg
@@ -260,25 +273,28 @@ func (e *AgentEngine) Run(ctx context.Context, session *Session, reporter Report
 
 				result := e.registry.Execute(ctx, c)
 
+				// 【核心拦截与注入】：如果工具执行失败，交由 RecoveryManager 注入救援指南
+				finalOutput := result.Output
 				if result.IsError {
-					log.Printf("  -> [Write] ❌ 工具执行报错: %s\n", result.Output)
+					finalOutput = e.recovery.AnalyzeAndInject(c.Name, result.Output)
+					log.Printf("  -> [Write] ❌ 注入救援指南\n")
 				} else {
 					log.Printf("  -> [Write] ✅ 工具执行成功 (返回 %d 字节)\n", len(result.Output))
 				}
 
 				// 【触发 Reporter】: 汇报工具物理执行的结果
 				if reporter != nil {
-					displayOutput := result.Output
+					displayOutput := finalOutput
 					if len(displayOutput) > 200 {
 						displayOutput = displayOutput[:200] + "... (已截断)"
 					}
 					reporter.OnToolResult(ctx, c.Name, displayOutput, result.IsError)
 				}
 
-				// 回填结果到对应索引
+				// 回填结果到对应索引（使用注入过 Recovery Hint 的最终结果）
 				obsMsg := schema.Message{
 					Role:       schema.RoleUser,
-					Content:    result.Output,
+					Content:    finalOutput,
 					ToolCallID: c.ID,
 				}
 				observationMsgs[callIndexMap[c.ID]] = obsMsg
