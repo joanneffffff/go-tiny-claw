@@ -310,6 +310,72 @@ fingerprint = MD5(tool_name + arguments)
 - 干预消息作为 `RoleUser` 返回，保证最高优先级
 - 成功后清空计数器，避免误判
 
+**参数规范化（Normalization）**：
+
+大模型的"小聪明"可能绕过简单的指纹检测：
+
+```
+第 1 次: read_file({"path": "/tmp/a.txt"})
+第 2 次: read_file({"path": "/tmp/a.txt "})       ← 尾部多了一个空格
+第 3 次: read_file({"path": "./../tmp/a.txt"})   ← 使用相对路径
+
+问题：三次参数的 MD5 哈希完全不同 → 不触发干预！
+```
+
+解决方案：在生成指纹前，对参数进行语义规范化：
+
+```python
+# 规范化后再哈希
+fingerprint = MD5(tool_name + normalize(tool_name, arguments))
+
+def normalize(tool_name, arguments):
+    if tool_name in ["read_file", "write_file"]:
+        return normalize_path(arguments)
+    elif tool_name == "bash":
+        return normalize_command(arguments)
+    # ...
+
+def normalize_path(arguments):
+    path = arguments["path"]
+    path = path.strip()                    # 去除首尾空白
+    path = filepath.clean(path)            # 规范化路径 ./../a.txt → a.txt
+    return json.dumps({"path": path})
+
+def normalize_command(arguments):
+    cmd = arguments["command"]
+    cmd = cmd.strip()                      # 去除首尾空白
+    cmd = remove_comments(cmd)             # 去除注释
+    cmd = compress_spaces(cmd)             # 压缩多余空格
+    return json.dumps({"command": cmd})
+```
+
+规范化策略表：
+
+| 参数类型 | 规范化操作 | 目的 |
+|----------|-----------|------|
+| **文件路径** | `strip()` + `filepath.Clean()` | 去除尾部空格、移除 `./` 和 `../` |
+| **文本块** | `strip()` + 统一换行符 | 去除首尾空白、`\r\n` → `\n` |
+| **Bash 命令** | `strip()` + 去注释 + 压缩空白 | 去除注释、多余空格 |
+| **通用** | JSON `sort_keys` + 字符值 `strip()` | 保证 JSON 结构一致 |
+
+规范化后的效果：
+
+```
+原始调用                          规范化后
+read_file("/tmp/a.txt")      →  {"path":"/tmp/a.txt"}
+read_file("/tmp/a.txt ")     →  {"path":"/tmp/a.txt"}   ← 相同！
+read_file("./../tmp/a.txt")  →  {"path":"/tmp/a.txt"}   ← 相同！
+
+结果：三个指纹相同 → 计数器累加 → 触发干预！
+```
+
+**保守原则**：
+
+- 不做大小写规范化（Linux 下大小写敏感）
+- 不做 alias 展开（需要系统知识）
+- 不压缩代码缩进（可能破坏语义）
+- 对未知工具只做基础 `strip()`
+
 ---
 
 ## 功能组合示例
