@@ -33,6 +33,9 @@ type AgentEngine struct {
 
 	// recovery 自愈管理器，在工具执行失败时注入救援指南
 	recovery *ctxpkg.RecoveryManager
+
+	// injector 提醒注入器，用于死循环探测和干预
+	injector *ReminderInjector
 }
 
 func NewAgentEngine(p provider.LLMProvider, r tools.Registry, enableThinking bool) *AgentEngine {
@@ -46,6 +49,8 @@ func NewAgentEngine(p provider.LLMProvider, r tools.Registry, enableThinking boo
 		compactor: ctxpkg.NewCompactor(3000, 6),
 		// 【初始化自愈管理器】：在工具失败时注入救援指南
 		recovery: ctxpkg.NewRecoveryManager(),
+		// 【初始化提醒注入器】：用于死循环探测和干预
+		injector: NewReminderInjector(),
 	}
 }
 
@@ -308,6 +313,27 @@ func (e *AgentEngine) Run(ctx context.Context, session *Session, reporter Report
 
 		// 8. 将所有的工具执行结果（Observation）持久化到 Session 中，开启下一轮的复盘与推理
 		session.Append(observationMsgs...)
+
+		// 9. 【核心防线】：在准备进入下一轮之前，进行死循环探测！
+		//    如果模型反复用相同参数调用同一个工具，injector 会检测到并注入严厉提醒
+		//    取第一个工具调用作为探测对象（简化处理）
+		if len(actionResp.ToolCalls) > 0 {
+			firstCall := actionResp.ToolCalls[0]
+			firstResult := observationMsgs[0]
+
+			// 从 observationMsgs 中提取 ToolResult 信息
+			var toolResult schema.ToolResult
+			toolResult.Output = firstResult.Content
+			toolResult.IsError = strings.Contains(firstResult.Content, "[系统救援指南]")
+
+			reminderMsg := e.injector.CheckAndInject(firstCall, toolResult)
+			if reminderMsg != nil {
+				// 如果触发了干预规则，将这条严厉的提醒作为 User 消息强制追加到 Session 的最末尾
+				// 大模型在下一轮被唤醒时，第一眼就会看到这句话，从而打破局部执念
+				log.Printf("[Engine] 🚨 检测到死循环模式，注入干预提醒！\n")
+				session.Append(*reminderMsg)
+			}
+		}
 	}
 
 	return nil
