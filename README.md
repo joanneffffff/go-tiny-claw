@@ -225,6 +225,38 @@ eng := engine.NewAgentEngine(provider, registry, false).WithMaxConcurrency(10)
 
 **关键设计**：错误信息作为 Observation 返回给模型（而非 Go error），让模型理解问题并自我纠正。
 
+**与传统 try-except 的区别**：
+
+| 对比项 | 传统 try-except | RecoveryManager |
+|--------|----------------|-----------------|
+| 谁决定下一步 | 程序员硬编码处理逻辑 | 模型自己推理决定 |
+| 灵活性 | 固定逻辑，只能处理预设情况 | 开放式，模型自由发挥 |
+| 适用场景 | 已知的、确定的错误类型 | 不可预测的开放式场景 |
+
+**类比理解**：
+
+```python
+# 传统 try-except：程序员决定出错后做什么
+try:
+    edit_file(old_text="xxx", new_text="yyy")
+except NotFoundError:
+    read_file("auth.go")  # 程序员硬编码这个动作
+    edit_file(old_text="正确的", new_text="yyy")
+
+# RecoveryManager：给模型"提示"，让模型自己决定
+result = edit_file(old_text="xxx", new_text="yyy")
+if result.is_error:
+    # 注入救援指南，返回给模型
+    return """
+    未找到 old_text
+    
+    [系统救援指南]: 请先用 read_file 读取文件获取正确内容
+    """
+    # 模型看到后，自己推理出需要调用 read_file
+```
+
+这就是"自愈"的含义——不是程序自动修复，而是模型理解问题后自己修复。
+
 ---
 
 ## 功能组合示例
