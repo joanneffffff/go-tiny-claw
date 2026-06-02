@@ -7,21 +7,41 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
+	larkws "github.com/larksuite/oapi-sdk-go/v3/ws"
+
 	"github.com/joanneffffff/go-tiny-claw/internal/engine"
+	"github.com/joanneffffff/go-tiny-claw/internal/feishu"
 	"github.com/joanneffffff/go-tiny-claw/internal/provider"
 	"github.com/joanneffffff/go-tiny-claw/internal/schema"
 	"github.com/joanneffffff/go-tiny-claw/internal/tools"
 )
 
 func main() {
-	// 通过命令行参数接收用户的 prompt
-	promptPtr := flag.String("prompt", "", "要交给 Agent 执行的任务描述")
+	// 通过命令行参数选择模式
+	mode := flag.String("mode", "cli", "运行模式: cli (命令行) 或 feishu (飞书机器人)")
+	promptPtr := flag.String("prompt", "", "要交给 Agent 执行的任务描述 (cli 模式)")
 	flag.Parse()
 
-	if *promptPtr == "" {
-		fmt.Println("用法: go run cmd/claw/main.go -prompt \"你的任务指令\"")
+	if *mode == "cli" {
+		runCLIMode(*promptPtr)
+	} else if *mode == "feishu" {
+		runFeishuMode()
+	} else {
+		fmt.Println("用法: go run cmd/claw/main.go -mode [cli|feishu]")
+		fmt.Println("  -mode cli     : 命令行模式 (需要 -prompt)")
+		fmt.Println("  -mode feishu  : 飞书 WebSocket 机器人模式")
+		os.Exit(1)
+	}
+}
+
+// runCLIMode CLI 模式
+func runCLIMode(prompt string) {
+	if prompt == "" {
+		fmt.Println("用法: go run cmd/claw/main.go -mode cli -prompt \"你的任务指令\"")
 		os.Exit(1)
 	}
 
@@ -37,33 +57,137 @@ func main() {
 	workDir, _ := os.Getwd()
 	llmProvider := provider.NewCustomClaudeProvider(model)
 
-	// 挂载基础工具
 	registry := tools.NewRegistry()
 	registry.Register(tools.NewReadFileTool(workDir))
 	registry.Register(tools.NewWriteFileTool(workDir))
 	registry.Register(tools.NewBashTool(workDir))
 
-	// 实例化引擎并开启计划模式 (PlanMode=true)
 	eng := engine.NewAgentEngine(llmProvider, registry, false).WithPlanMode(true)
 	reporter := engine.NewTerminalReporter()
 
-	// 使用固定的 SessionID，以便在多次运行之间共享"短期工作记忆"
-	// (在真实的 CLI 中，如果进程重启，Session 的内存历史其实是丢失的。
-	// 但这正是我们要演示的重点：即便短期内存丢失，只要 TODO.md 还在，任务就能继续！)
 	sessionID := "task_plan_mode_01"
 	sess := engine.GlobalSessionMgr.GetOrCreate(sessionID, workDir)
 
-	log.Printf("\n>>> 🚀 收到指令: %s\n", *promptPtr)
+	log.Printf("\n>>> 🚀 收到指令: %s\n", prompt)
 
-	// 将用户的 Prompt 压入 Session
-	sess.Append(schema.Message{Role: schema.RoleUser, Content: *promptPtr})
+	sess.Append(schema.Message{Role: schema.RoleUser, Content: prompt})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 	defer cancel()
 
-	// 唤醒引擎执行
 	err := eng.Run(ctx, sess, reporter)
 	if err != nil {
 		log.Fatalf("引擎运行崩溃: %v", err)
 	}
+}
+
+// runFeishuMode 飞书 WebSocket 模式
+func runFeishuMode() {
+	if os.Getenv("ANTHROPIC_API_KEY") == "" {
+		log.Fatal("请先导出 ANTHROPIC_API_KEY 环境变量")
+	}
+	if os.Getenv("FEISHU_APP_ID") == "" || os.Getenv("FEISHU_APP_SECRET") == "" {
+		log.Fatal("请先导出 FEISHU_APP_ID 和 FEISHU_APP_SECRET 环境变量")
+	}
+
+	appID := os.Getenv("FEISHU_APP_ID")
+	appSecret := os.Getenv("FEISHU_APP_SECRET")
+
+	model := os.Getenv("ANTHROPIC_MODEL")
+	if model == "" {
+		model = "glm-5.1"
+	}
+
+	workDir, _ := os.Getwd()
+	llmProvider := provider.NewCustomClaudeProvider(model)
+
+	registry := tools.NewRegistry()
+	registry.Register(tools.NewReadFileTool(workDir))
+	registry.Register(tools.NewWriteFileTool(workDir))
+	registry.Register(tools.NewBashTool(workDir))
+
+	eng := engine.NewAgentEngine(llmProvider, registry, false).WithPlanMode(false)
+
+	// 为飞书 bot 绑定一个 session
+	sessionID := "feishu_websocket_001"
+	sess := engine.GlobalSessionMgr.GetOrCreate(sessionID, workDir)
+
+	// 创建飞书机器人
+	bot := feishu.NewFeishuBot(eng, sess)
+
+	// 【核心注入】注册 HITL 安全拦截 Middleware
+	registry.Use(func(ctx context.Context, call schema.ToolCall) (bool, string) {
+		argsStr := string(call.Arguments)
+
+		// 检查是否命中高危特征库
+		if feishu.IsDangerousCommand(call.Name, argsStr) {
+			log.Printf("[HITL] ⚠️ 检测到高危操作: %s, 参数: %s\n", call.Name, argsStr)
+			log.Printf("[HITL] 已发送审批请求到飞书，等待人类决策...\n")
+
+			// 挂起当前协程，发送消息给飞书，等待人类审批
+			allowed, reason := feishu.GlobalApprovalMgr.WaitForApproval(
+				call.ID, call.Name, argsStr, bot.Reporter(),
+			)
+
+			if !allowed {
+				log.Printf("[HITL] 🚫 操作被拒绝: %s\n", reason)
+				return false, reason
+			}
+			log.Printf("[HITL] ✅ 操作被批准\n")
+			return true, ""
+		}
+
+		// 非高危操作，直接放行
+		return true, ""
+	})
+
+	// 创建 WebSocket 客户端
+	wsClient := larkws.NewClient(appID, appSecret,
+		larkws.WithEventHandler(bot.GetEventDispatcher()),
+		larkws.WithAutoReconnect(true),
+		larkws.WithLogLevel(1), // Info level
+	)
+
+	// 设置生命周期回调
+	wsClient.SetOnReady(func() {
+		log.Println("🟢 飞书 WebSocket 连接已建立，机器人已上线！")
+	})
+
+	wsClient.SetOnDisconnected(func() {
+		log.Println("🔴 飞书 WebSocket 连接已断开")
+	})
+
+	wsClient.SetOnReconnecting(func() {
+		log.Println("🟡 飞书 WebSocket 正在重连...")
+	})
+
+	wsClient.SetOnReconnected(func() {
+		log.Println("🟢 飞书 WebSocket 已重连成功")
+	})
+
+	wsClient.SetOnError(func(err error) {
+		log.Printf("🔴 飞书 WebSocket 错误: %v\n", err)
+	})
+
+	log.Println("🚀 go-tiny-claw 飞书机器人启动中...")
+	log.Println("📋 已挂载 HITL 中间件，高危操作需人工审批")
+	log.Println("💬 飞书对话中发送 approve/reject 命令进行审批")
+	log.Println("🔌 正在连接飞书 WebSocket...")
+
+	// 启动 WebSocket 连接
+	ctx := context.Background()
+	go func() {
+		if err := wsClient.Start(ctx); err != nil {
+			log.Fatalf("WebSocket 启动失败: %v", err)
+		}
+	}()
+
+	// 等待退出信号
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	<-sigChan
+
+	log.Println("🛑 正在关闭飞书机器人...")
+	wsClient.Close()
+	log.Println("👋 已退出")
 }
