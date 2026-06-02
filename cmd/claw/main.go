@@ -8,11 +8,11 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 	"time"
 
+	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
+	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher"
 	larkws "github.com/larksuite/oapi-sdk-go/v3/ws"
 
 	"github.com/joanneffffff/go-tiny-claw/internal/engine"
@@ -178,53 +178,24 @@ func runFeishuMode() {
 		return true, ""
 	})
 
+	// 使用 WebSocket 模式（不需要公网地址）
+	// 关键：WebSocket 模式下 dispatcher 不需要 verificationToken 和 encryptKey
+	d := dispatcher.NewEventDispatcher("", "").
+		OnP2MessageReceiveV1(bot.HandleMessage())
+
 	// 创建 WebSocket 客户端
 	wsClient := larkws.NewClient(appID, appSecret,
-		larkws.WithEventHandler(bot.GetEventDispatcher()),
+		larkws.WithEventHandler(d),
 		larkws.WithAutoReconnect(true),
-		larkws.WithLogLevel(1), // Info level
+		larkws.WithLogLevel(larkcore.LogLevelInfo),
 	)
 
-	// 设置生命周期回调
-	wsClient.SetOnReady(func() {
-		log.Println("🟢 飞书 WebSocket 连接已建立，机器人已上线！")
-	})
-
-	wsClient.SetOnDisconnected(func() {
-		log.Println("🔴 飞书 WebSocket 连接已断开")
-	})
-
-	wsClient.SetOnReconnecting(func() {
-		log.Println("🟡 飞书 WebSocket 正在重连...")
-	})
-
-	wsClient.SetOnReconnected(func() {
-		log.Println("🟢 飞书 WebSocket 已重连成功")
-	})
-
-	wsClient.SetOnError(func(err error) {
-		log.Printf("🔴 飞书 WebSocket 错误: %v\n", err)
-	})
-
-	log.Println("🚀 go-tiny-claw 飞书机器人启动中...")
+	log.Println("🚀 go-tiny-claw 飞书服务端已启动（WebSocket 模式，无需公网地址）")
 	log.Println("📋 已挂载 HITL 中间件，高危操作需人工审批")
 	log.Println("💬 飞书对话中发送 approve/reject 命令进行审批")
-	log.Println("🔌 正在连接飞书 WebSocket...")
 
-	// 启动 WebSocket 连接
-	ctx := context.Background()
-	go func() {
-		if err := wsClient.Start(ctx); err != nil {
-			log.Fatalf("WebSocket 启动失败: %v", err)
-		}
-	}()
-
-	// 等待退出信号
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	<-sigChan
-
-	log.Println("🛑 正在关闭飞书机器人...")
-	wsClient.Close()
-	log.Println("👋 已退出")
+	// Start 会阻塞，自动重连
+	if err := wsClient.Start(context.Background()); err != nil {
+		log.Fatalf("WebSocket 客户端错误: %v", err)
+	}
 }
