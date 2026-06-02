@@ -10,6 +10,10 @@ import (
 	"github.com/joanneffffff/go-tiny-claw/internal/schema"
 )
 
+// MiddlewareFunc 定义了中间件的签名。
+// 它接收当前的 ToolCall，并返回一个是否允许执行的布尔值 (allowed)，以及拦截时的原因 (rejectReason)。
+type MiddlewareFunc func(ctx context.Context, call schema.ToolCall) (allowed bool, rejectReason string)
+
 // BaseTool 是所有具体工具必须实现的通用接口
 type BaseTool interface {
 	// Name 返回工具的全局唯一名称 (大模型通过这个名字调用它)
@@ -33,6 +37,9 @@ type Registry interface {
 	// Register 挂载一个新的工具到系统中
 	Register(tool BaseTool)
 
+	// Use 挂载全局 Middleware（拦截器），在工具执行前依次运行
+	Use(mw MiddlewareFunc)
+
 	// GetAvailableTools 返回当前系统挂载的所有工具的 Schema，供 Main Loop 交给 Provider
 	GetAvailableTools() []schema.ToolDefinition
 
@@ -47,11 +54,15 @@ type Registry interface {
 type registryImpl struct {
 	// 使用 map 以工具的 Name 作为 Key 进行快速 O(1) 路由查找
 	tools map[string]BaseTool
+
+	// middlewares 保存挂载的中间件链，按挂载顺序依次执行
+	middlewares []MiddlewareFunc
 }
 
 func NewRegistry() Registry {
 	return &registryImpl{
-		tools: make(map[string]BaseTool),
+		tools:       make(map[string]BaseTool),
+		middlewares: make([]MiddlewareFunc, 0),
 	}
 }
 
@@ -62,6 +73,11 @@ func (r *registryImpl) Register(tool BaseTool) {
 	}
 	r.tools[name] = tool
 	log.Printf("[Registry] 成功挂载工具: %s (只读: %v)\n", name, tool.IsReadOnly())
+}
+
+func (r *registryImpl) Use(mw MiddlewareFunc) {
+	r.middlewares = append(r.middlewares, mw)
+	log.Printf("[Registry] 成功挂载 Middleware\n")
 }
 
 func (r *registryImpl) GetAvailableTools() []schema.ToolDefinition {
@@ -92,10 +108,23 @@ func (r *registryImpl) Execute(ctx context.Context, call schema.ToolCall) schema
 		}
 	}
 
-	// 2. 执行工具逻辑：将原始的 JSON 字节流直接丢给具体工具
+	// 2. 【核心防御】在执行底层逻辑前，依次运行所有的 Middleware
+	for _, mw := range r.middlewares {
+		allowed, reason := mw(ctx, call)
+		if !allowed {
+			log.Printf("[Registry] ⚠️ 工具 %s 被 Middleware 拦截: %s\n", call.Name, reason)
+			return schema.ToolResult{
+				ToolCallID: call.ID,
+				Output:     fmt.Sprintf("执行被系统拦截。原因: %s", reason),
+				IsError:    true, // 必须返回 Error，强制大模型阅读拒绝理由
+			}
+		}
+	}
+
+	// 3. 执行工具逻辑：将原始的 JSON 字节流直接丢给具体工具（所有 Middleware 都放行）
 	output, err := tool.Execute(ctx, call.Arguments)
 
-	// 3. 封装结果：将执行结果或底层物理错误封装后返回给 Main Loop
+	// 4. 封装结果：将执行结果或底层物理错误封装后返回给 Main Loop
 	if err != nil {
 		errMsg := fmt.Sprintf("Error executing %s: %v", call.Name, err)
 		return schema.ToolResult{
