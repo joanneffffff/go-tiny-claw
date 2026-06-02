@@ -48,13 +48,12 @@ func NewFeishuBot(eng *engine.AgentEngine, sess *engine.Session) *FeishuBot {
 	}
 }
 
-// GetEventDispatcher 用于注册到 HTTP 服务器，处理来自飞书的 POST 事件
+// GetEventDispatcher 返回飞书事件调度器
+// WebSocket 模式下不需要 verificationToken 和 encryptKey，传空即可
 func (b *FeishuBot) GetEventDispatcher() *dispatcher.EventDispatcher {
-	encryptKey := os.Getenv("FEISHU_ENCRYPT_KEY")
-	verifyToken := os.Getenv("FEISHU_VERIFY_TOKEN")
-
 	// 使用官方 SDK 构建调度器，监听 "接收消息" 事件
-	handler := dispatcher.NewEventDispatcher(verifyToken, encryptKey).
+	// WebSocket 模式：token 和 key 均传空
+	handler := dispatcher.NewEventDispatcher("", "").
 		OnP2MessageReceiveV1(func(ctx context.Context, event *larkim.P2MessageReceiveV1) error {
 			// 由于飞书消息体是 JSON，我们需要粗略地提取其中的文本内容。
 			// 这里简单处理：去掉开头结尾的特殊转义字符和引用的机器人名字。

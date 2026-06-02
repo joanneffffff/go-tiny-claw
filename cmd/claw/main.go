@@ -12,7 +12,6 @@ import (
 	"time"
 
 	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
-	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher"
 	larkws "github.com/larksuite/oapi-sdk-go/v3/ws"
 
 	"github.com/joanneffffff/go-tiny-claw/internal/engine"
@@ -178,14 +177,13 @@ func runFeishuMode() {
 		return true, ""
 	})
 
-	// 使用 WebSocket 模式（不需要公网地址）
-	// 关键：WebSocket 模式下 dispatcher 不需要 verificationToken 和 encryptKey
-	d := dispatcher.NewEventDispatcher("", "").
-		OnP2MessageReceiveV1(bot.HandleMessage())
+	// 使用 bot.GetEventDispatcher() 创建飞书事件调度器
+	// WebSocket 模式下已内置 approve/reject 拦截逻辑
+	eventDispatcher := bot.GetEventDispatcher()
 
 	// 创建 WebSocket 客户端
 	wsClient := larkws.NewClient(appID, appSecret,
-		larkws.WithEventHandler(d),
+		larkws.WithEventHandler(eventDispatcher),
 		larkws.WithAutoReconnect(true),
 		larkws.WithLogLevel(larkcore.LogLevelInfo),
 	)
