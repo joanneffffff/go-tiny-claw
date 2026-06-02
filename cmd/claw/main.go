@@ -2,12 +2,14 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -19,6 +21,41 @@ import (
 	"github.com/joanneffffff/go-tiny-claw/internal/schema"
 	"github.com/joanneffffff/go-tiny-claw/internal/tools"
 )
+
+// loadEnvFromFile 从 .env 文件加载环境变量
+func loadEnvFromFile(path string) {
+	file, err := os.Open(path)
+	if err != nil {
+		return // 文件不存在，静默忽略
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		// 跳过空行和注释
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		// 解析 KEY=VALUE
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) == 2 {
+			key := strings.TrimSpace(parts[0])
+			value := strings.TrimSpace(parts[1])
+			// 只有当环境变量不存在时才设置
+			if os.Getenv(key) == "" {
+				os.Setenv(key, value)
+			}
+		}
+	}
+}
+
+func init() {
+	// 自动从工作目录加载 .env 文件
+	if workDir, err := os.Getwd(); err == nil {
+		loadEnvFromFile(workDir + "/.env")
+	}
+}
 
 func main() {
 	// 通过命令行参数选择模式
