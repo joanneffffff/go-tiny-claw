@@ -531,3 +531,90 @@ if tool.dangerLevel == "critical" {
 | **路径安全** | `workDir` 锁定 + 路径穿越检测，双重校验 |
 | **重试预算** | 全局 `retryBudget` 限制总重试次数 |
 | **高危 Canary** | 危险操作需要二次确认，不直接执行 |
+
+### 8. HITL 中间件（人工审批）
+
+HITL（Human-in-the-Loop）中间件在工具执行前拦截高危操作，要求人工审批：
+
+```go
+registry.Use(feishu.HITLMiddleware())
+```
+
+**高危工具清单**：
+
+| 工具 | 说明 |
+|------|------|
+| `write_file` | 写入文件 |
+| `edit_file` | 编辑文件 |
+| `bash` | 执行 Shell 命令 |
+
+**高危命令特征检测**：
+
+```go
+dangerousPatterns := []string{
+    "rm -rf",      // 删除命令
+    "rm -fr",      // 删除命令变体
+    "del /",       // Windows 删除
+    "format",      // 格式化
+    "mkfs",        // 创建文件系统
+    "dd if=",      // 磁盘操作
+    "chmod 777",   // 危险权限
+    "shutdown",    // 关机
+    "reboot",      // 重启
+}
+```
+
+**审批流程**：
+
+```
+模型调用高危工具 → HITL 中间件拦截 → 发送审批请求到飞书
+                                        ↓
+                              人类回复 approve/reject
+                                        ↓
+                              批准执行 / 拒绝并告知模型
+```
+
+**飞书交互示例**：
+
+```
+🔴 审批请求
+
+任务ID: task_1
+工具: bash
+参数: {"command":"rm -rf /tmp/logs/*"}
+
+操作描述: 即将执行 bash 操作
+
+请回复:
+- approve task_1 批准执行
+- reject task_1 拒绝执行
+```
+
+**重要说明**：HITL 是**模型调用工具后**的防线。如果模型自己拒绝执行危险命令（如 glm-5.1 有安全对齐训练），HITL 不会触发。这是双重保障：
+
+| 防线 | 说明 |
+|------|------|
+| **模型安全对齐** | 模型自己拒绝危险命令（如 rm -rf *） |
+| **HITL 中间件** | 模型执行高危工具时，人工审批 |
+
+**测试结果**：
+
+| 场景 | 模型行为 | HITL |
+|------|----------|------|
+| `bash ls -la` | 调用工具 | ✅ 拦截，要求审批 |
+| `bash rm -rf *` | 模型自己拒绝 | 不触发（模型安全对齐） |
+| `write_file` | 调用工具 | ✅ 拦截，要求审批 |
+| `read_file` | 调用工具 | ❌ 非高危，直接放行 |
+
+**飞书机器人运行**：
+
+```bash
+# 构建并运行
+docker exec go-tiny-claw go build -o main ./cmd/claw/
+docker exec -d go-tiny-claw ./main -mode feishu
+
+# 查看日志
+docker exec go-tiny-claw tail -f /tmp/feishu.log
+```
+
+---
