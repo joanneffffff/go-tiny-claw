@@ -5,7 +5,9 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/joanneffffff/go-tiny-claw/internal/schema"
 )
@@ -168,4 +170,59 @@ func HITLMiddleware() func(ctx context.Context, call schema.ToolCall) (bool, str
 
 		return false, fmt.Sprintf("人工审批未通过: %s", reason)
 	}
+}
+
+// IsDangerousCommand 检查工具调用是否命中高危特征库
+func IsDangerousCommand(toolName, argsStr string) bool {
+	// 高危工具清单
+	dangerousTools := map[string]bool{
+		"write_file": true,
+		"edit_file":  true,
+		"bash":       true,
+	}
+
+	if !dangerousTools[toolName] {
+		return false
+	}
+
+	// 高危命令特征（针对 bash）
+	dangerousPatterns := []string{
+		"rm -rf",
+		"rm -fr",
+		"del /",
+		"format",
+		"mkfs",
+		"dd if=",
+		":(){ :|:& };:",  // Fork bomb
+		"chmod 777",
+		"chown root",
+		"> /dev/sda",
+		"shutdown",
+		"reboot",
+		"init 0",
+		"init 6",
+	}
+
+	// 检查是否命中高危模式
+	for _, pattern := range dangerousPatterns {
+		if strings.Contains(argsStr, pattern) {
+			return true
+		}
+	}
+
+	// 所有涉写工具默认视为高危（保守策略）
+	return true
+}
+
+// WaitForApproval 发起审批请求并阻塞等待（简化版接口）
+func (am *ApprovalManager) WaitForApproval(taskID, toolName, argsStr string, reporter *FeishuReporter) (bool, string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	description := fmt.Sprintf("即将执行 %s 操作", toolName)
+	approved, reason, err := am.RequestApproval(ctx, toolName, argsStr, description)
+	if err != nil {
+		return false, fmt.Sprintf("审批请求失败: %v", err)
+	}
+	return approved, reason
 }
