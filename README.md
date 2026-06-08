@@ -96,7 +96,84 @@ docker exec go-tiny-claw go build -o claw ./cmd/claw/
 
 ## 核心功能
 
-### 1. Session 管理（多用户隔离）
+### 1. SubagentTool（子智能体委派）
+
+主 Agent 可以派出一个专门用于深度探索的子智能体，避免主 Agent 的上下文被大量代码撑爆：
+
+```go
+// 为子智能体准备只读工具注册表（只能读文件、执行只读 bash）
+readOnlyRegistry := tools.NewRegistry()
+readOnlyRegistry.Register(tools.NewReadFileTool(workDir))
+readOnlyRegistry.Register(tools.NewBashTool(workDir))
+
+// 为主 Agent 注册子智能体工具
+registry.Register(tools.NewSubagentTool(eng, readOnlyRegistry, reporter))
+```
+
+**工作流程**：
+
+```
+主 Agent 收到指令 → 调用 spawn_subagent → 子 Agent 启动独立循环
+                                              ↓
+                              子 Agent 用只读工具探索代码
+                                              ↓
+                              子 Agent 返回精炼摘要报告
+                                              ↓
+主 Agent 收到报告 → 继续处理（上下文未被污染）
+```
+
+**核心价值**：
+
+| 对比项 | 直接探索 | 使用子智能体 |
+|--------|----------|--------------|
+| 上下文占用 | 几万字代码涌入主上下文 | 只收到几百字摘要 |
+| 工具权限 | 主 Agent 权限过大 | 子 Agent 只能读、不能写 |
+| 隔离性 | 失败影响主流程 | 子 Agent 失败不影响主 Agent |
+
+**使用示例**：
+
+```python
+# Python 伪代码理解
+class SubagentTool:
+    def execute(self, task_prompt):
+        # 1. 创建独立的子 Agent 循环
+        sub_agent = AgentEngine(
+            tools=["read_file", "bash"],  # 只读工具
+            max_turns=10                   # 限制最多 10 轮
+        )
+        
+        # 2. 子 Agent 执行探索任务
+        summary = sub_agent.run(task_prompt)
+        
+        # 3. 返回精炼报告给主 Agent
+        return f"【子智能体探索报告】:\n{summary}"
+```
+
+**实际运行日志**：
+
+```
+>>> 🚀 收到指令: 找到核心密码...
+[🛠️ 调用工具] spawn_subagent
+   参数: {"task_prompt":"探索 workspace 目录，找到核心密码..."}
+   
+[Subagent] 🚀 主 Agent 发起委派！正在拉起探路者...
+[🛠️ 调用工具] [Subagent] bash
+   参数: {"command":"find . -name 'config.txt' -type f"}
+[✅ 执行成功] [Subagent] bash
+[🛠️ 调用工具] [Subagent] read_file
+   参数: {"path":"./legacy/v1/auth/config.txt"}
+[✅ 执行成功] [Subagent] read_file
+
+[Subagent] ✅ 子智能体任务结束。报告返回给主干...
+
+🤖 Agent 回复:
+子智能体已找到密码: super_secret_agent_password_42
+现在写入 answer.txt...
+```
+
+---
+
+### 2. Session 管理（多用户隔离）
 
 每个用户/群聊拥有独立的 Session，历史记录互不干扰：
 

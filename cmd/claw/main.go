@@ -93,13 +93,23 @@ func runCLIMode(prompt string) {
 	workDir, _ := os.Getwd()
 	llmProvider := provider.NewCustomClaudeProvider(model)
 
+	// 【防御沙箱】为子智能体准备受限的只读注册表
+	readOnlyRegistry := tools.NewRegistry()
+	readOnlyRegistry.Register(tools.NewReadFileTool(workDir))
+	readOnlyRegistry.Register(tools.NewBashTool(workDir))
+
+	// 为主智能体准备全功能注册表
 	registry := tools.NewRegistry()
 	registry.Register(tools.NewReadFileTool(workDir))
 	registry.Register(tools.NewWriteFileTool(workDir))
 	registry.Register(tools.NewBashTool(workDir))
+	registry.Register(tools.NewEditFileTool(workDir))
 
 	eng := engine.NewAgentEngine(llmProvider, registry, false).WithPlanMode(true)
 	reporter := engine.NewTerminalReporter()
+
+	// 【核心装配】：将带有 Engine 引用和只读 Registry 的 Subagent 工具注册进主线
+	registry.Register(tools.NewSubagentTool(eng, readOnlyRegistry, reporter))
 
 	sessionID := "task_plan_mode_01"
 	sess := engine.GlobalSessionMgr.GetOrCreate(sessionID, workDir)
@@ -137,12 +147,23 @@ func runFeishuMode() {
 	workDir, _ := os.Getwd()
 	llmProvider := provider.NewCustomClaudeProvider(model)
 
+	// 【防御沙箱】为子智能体准备受限的只读注册表
+	readOnlyRegistry := tools.NewRegistry()
+	readOnlyRegistry.Register(tools.NewReadFileTool(workDir))
+	readOnlyRegistry.Register(tools.NewBashTool(workDir))
+
+	// 为主智能体准备全功能注册表
 	registry := tools.NewRegistry()
 	registry.Register(tools.NewReadFileTool(workDir))
 	registry.Register(tools.NewWriteFileTool(workDir))
 	registry.Register(tools.NewBashTool(workDir))
+	registry.Register(tools.NewEditFileTool(workDir))
 
 	eng := engine.NewAgentEngine(llmProvider, registry, false).WithPlanMode(false)
+	reporter := engine.NewTerminalReporter()
+
+	// 【核心装配】：将带有 Engine 引用和只读 Registry 的 Subagent 工具注册进主线
+	registry.Register(tools.NewSubagentTool(eng, readOnlyRegistry, reporter))
 
 	// 为飞书 bot 绑定一个 session
 	sessionID := "feishu_websocket_001"
